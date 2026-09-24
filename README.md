@@ -81,7 +81,7 @@ cd /home/<system-user>/<your-domain>
 sudo -u <system-user> python3 server.py --set-password
 ```
 
-Use at least 12 characters; a sentence of a few words works well. The hash is stored in `.iptv-auth` (readable only by its owner and ignored by git). To change the password, run the command again and restart the daemon.
+Use at least 12 characters; a sentence of a few words works well. The hash is stored in `.iptv-auth` (readable only by its owner and ignored by git). To change the password, run the command again: the running server picks it up by itself and everyone has to log in again.
 
 ### 3. Add a daemon
 In Ploi go to **Server → Daemons** and add:
@@ -97,7 +97,9 @@ In Ploi go to **Server → Daemons** and add:
 - `--port` picks a port that no other app on your server uses (check with `sudo ss -ltnp`).
 - `-u` makes the log messages show up in the daemon log right away.
 
-If the daemon was started before you set a password, it stops retrying after a few attempts (status `FATAL`). Restart it in Ploi after setting the password, and after every deploy.
+**Automatic restarts**: the server watches its own `server.py` and the password file. After a deploy (`git pull`) or a new password it restarts itself within a few seconds, inside the same process, so the daemon keeps running and you don't have to restart anything. If a deployed `server.py` contains a syntax error, the old version keeps running and the log says so. Changes to `index.html` need no restart at all. This works on Linux and macOS; turn it off with `--no-reload`.
+
+If the daemon was started before you set a password, it stops retrying after a few attempts (status `FATAL`). Restart it once in Ploi; from then on it takes care of itself.
 
 ### 4. Configure nginx
 In Ploi go to **Site → Manage → Nginx configuration** and replace the `location / { … }` block with the block below. Also remove `index`, `error_page`, the `robots.txt` and `favicon.ico` locations and the whole `location ~ \.php$` block, and keep all lines with `include`. Don't add your own `/.well-known/acme-challenge/` location: Ploi already provides one, and a duplicate stops nginx from starting.
@@ -148,6 +150,7 @@ Behind **Cloudflare**, use `$http_cf_connecting_ip` for `X-Real-IP`. Otherwise e
 | `python server.py --test "<url>"` | Check a playlist link step by step: DNS, connection and provider response |
 | `python server.py --set-password` | Set or change the login password (required when hosting on a server) |
 | `python server.py --require-auth` | Refuse to start without a password |
+| `python server.py --no-reload` | Don't restart automatically when `server.py` or the password changes |
 | `IPTV_SESSION_DAYS=7` | How long a login stays valid (default 30 days) |
 | `IPTV_ALLOW_PRIVATE=1` | Allow the proxy to reach private network addresses (only for an IPTV server on your own network) |
 

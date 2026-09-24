@@ -544,7 +544,8 @@ def set_password():
     except OSError:
         pass
     print(f"Opgeslagen in {AUTH_FILE} (alleen een versleutelde hash, niet het wachtwoord zelf).")
-    print("Herstart de server. Iedereen die nu is ingelogd, moet opnieuw inloggen.")
+    print("Draait de server als daemon, dan herstart hij binnen een paar seconden vanzelf. Anders: herstart hem zelf.")
+    print("Iedereen die nu is ingelogd, moet opnieuw inloggen.")
 
 
 # ---------- testmodus ----------
@@ -597,6 +598,46 @@ def run_test(url):
     print("en sluit die andere app even: veel abonnementen staan maar één verbinding tegelijk toe.")
 
 
+# ---------- automatisch herstarten na een deploy ----------
+WATCH_FILES = [os.path.abspath(__file__), AUTH_FILE]
+
+
+def _mtimes(files):
+    out = {}
+    for f in files:
+        try:
+            out[f] = os.stat(f).st_mtime_ns
+        except OSError:
+            out[f] = None
+    return out
+
+
+def watch_for_updates(files=None, interval=2.0, restart=None):
+    """Nieuwe server.py (na git pull) of een nieuw wachtwoord? Dan herstart de server zichzelf,
+    in hetzelfde proces, zodat de daemon (supervisor) gewoon blijft lopen."""
+    files = files or WATCH_FILES
+    restart = restart or (lambda: os.execv(sys.executable, getattr(sys, "orig_argv", [sys.executable] + sys.argv)))
+    last = _mtimes(files)
+    while True:
+        time.sleep(interval)
+        now = _mtimes(files)
+        if now == last:
+            continue
+        time.sleep(1)  # git kan nog aan het schrijven zijn
+        if _mtimes(files) != now:
+            continue   # nog niet klaar; de volgende ronde opnieuw kijken
+        try:
+            with open(files[0], encoding="utf-8") as f:
+                compile(f.read(), files[0], "exec")
+        except (SyntaxError, ValueError, OSError) as e:
+            print(f"[update] De nieuwe server.py bevat een fout; de oude versie blijft draaien. ({e})", flush=True)
+            last = now
+            continue
+        print("[update] Nieuwe versie of nieuw wachtwoord gevonden, server herstart…", flush=True)
+        restart()
+        return
+
+
 def main():
     if "--set-password" in sys.argv:
         return set_password()
@@ -626,6 +667,10 @@ def main():
     url = f"http://localhost:{port}"
     print(f"Mijn IPTV draait op {url}  (stoppen: Ctrl+C)")
     print("Inloggen met wachtwoord: " + ("aan" if AUTH_ENABLED else "uit (alleen bereikbaar vanaf deze computer)"))
+    # Alleen op Linux/macOS: daar vervangt de herstart het proces netjes, zodat de daemon niets merkt.
+    if os.name == "posix" and "--no-reload" not in sys.argv:
+        threading.Thread(target=watch_for_updates, daemon=True).start()
+        print("Automatisch herstarten na een deploy of nieuw wachtwoord: aan")
     if "--no-browser" not in sys.argv:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
