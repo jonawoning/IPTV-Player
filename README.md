@@ -62,13 +62,23 @@ What protects it:
 - Security headers (CSP, HSTS, no framing), and responses from IPTV providers can never run as a page on your domain
 
 ### 1. Create the site
-In Ploi, create a site for your (sub)domain, deploy this repository to it, and enable **SSL** (Let's Encrypt).
-
-### 2. Set a password
-SSH into the server, go to the site folder and run:
+In Ploi, create a site for your (sub)domain:
+- **Project type**: None (Static HTML or PHP). Keep the web directory at `/public`: that folder doesn't exist in this repo, so nginx can never serve the project files directly.
+- Tick **Create system user**, so the site runs isolated from your other sites.
+- Point a DNS record for the domain to your server, then enable **SSL** (Let's Encrypt).
+- Replace the deploy script with (use your own system user and domain):
 
 ```bash
-python3 server.py --set-password
+cd /home/<system-user>/<your-domain>
+git pull origin main
+```
+
+### 2. Set a password
+SSH into the server and run the command **as the site's system user**, so the daemon can read the password file:
+
+```bash
+cd /home/<system-user>/<your-domain>
+sudo -u <system-user> python3 server.py --set-password
 ```
 
 Use at least 12 characters; a sentence of a few words works well. The hash is stored in `.iptv-auth` (readable only by its owner and ignored by git). To change the password, run the command again and restart the daemon.
@@ -78,21 +88,26 @@ In Ploi go to **Server → Daemons** and add:
 
 | Field | Value |
 | --- | --- |
-| Command | `python3 server.py --no-browser --require-auth` |
-| Directory | `/home/ploi/your-domain.com` |
-| User | `ploi` |
+| Command | `python3 -u /home/<system-user>/<your-domain>/server.py --no-browser --require-auth --port 8010` |
+| Processes | `1` |
+| Directory | `/home/<system-user>/<your-domain>` |
+| System user | the site's system user |
 
-`--require-auth` stops the server from starting if no password is set.
+- `--require-auth` stops the server from starting if no password is set.
+- `--port` picks a port that no other app on your server uses (check with `sudo ss -ltnp`).
+- `-u` makes the log messages show up in the daemon log right away.
+
+If the daemon was started before you set a password, it stops retrying after a few attempts (status `FATAL`). Restart it in Ploi after setting the password, and after every deploy.
 
 ### 4. Configure nginx
-In Ploi go to **Site → Manage → Nginx configuration** and replace the `location / { … }` block with:
+In Ploi go to **Site → Manage → Nginx configuration** and replace the `location / { … }` block with the block below. Also remove `index`, `error_page`, the `robots.txt` and `favicon.ico` locations and the whole `location ~ \.php$` block, and keep all lines with `include`. Don't add your own `/.well-known/acme-challenge/` location: Ploi already provides one, and a duplicate stops nginx from starting.
 
 ```nginx
 location / {
-    proxy_pass http://127.0.0.1:8000;
+    proxy_pass http://127.0.0.1:8010;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
-    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Real-IP $remote_addr;   # behind Cloudflare: $http_cf_connecting_ip
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
 
@@ -109,6 +124,14 @@ location / {
 
 Leave out anything that serves files directly from the site folder (such as a `root` with `try_files`): all traffic must go through `server.py`.
 
+Save the configuration in Ploi and let it reload nginx. **Never restart nginx by hand after an edit**: if the configuration contains an error, nginx won't start again and *all* sites on the server go down. When working over SSH, always test first:
+
+```bash
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+Behind **Cloudflare**, use `$http_cf_connecting_ip` for `X-Real-IP`. Otherwise every visitor seems to come from a Cloudflare address, and the brute-force lockout would block you together with an attacker.
+
 ### Good to know
 - **Bandwidth**: all video passes through your server (about 3–8 Mbit/s per HD stream). Check your VPS traffic allowance.
 - **Provider rules**: some IPTV providers block data-center IP addresses, or allow only one connection at a time. Watching on the server and in another app at the same time may not work.
@@ -120,7 +143,7 @@ Leave out anything that serves files directly from the site folder (such as a `r
 | Option | Description |
 | --- | --- |
 | `python server.py --no-browser` | Don't open the browser automatically |
-| `PORT=9000 python server.py` | Use a different port (default `8000`) |
+| `python server.py --port 9000` | Use a different port (default `8000`; the `PORT` environment variable also works) |
 | `IPTV_UA="MyApp/1.0" python server.py` | Try a custom User-Agent first when connecting to the provider |
 | `python server.py --test "<url>"` | Check a playlist link step by step: DNS, connection and provider response |
 | `python server.py --set-password` | Set or change the login password (required when hosting on a server) |

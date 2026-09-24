@@ -326,7 +326,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # same-origin: binnen de site werkt alles normaal, naar andere sites lekt geen URL (met inloggegevens)
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("X-Robots-Tag", "noindex, nofollow")
         self.send_header("Content-Security-Policy", getattr(self, "csp", PROXY_CSP))
         if self.is_https():
@@ -371,9 +372,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 + ("; Secure" if self.is_https() else ""))
 
     def same_origin(self):
+        # Moderne browsers zeggen zelf waar een verzoek vandaan komt; een pagina kan dat niet vervalsen.
+        site = self.headers.get("Sec-Fetch-Site")
+        if site:
+            return site in ("same-origin", "none")
         origin = self.headers.get("Origin")
         if not origin:
             return True  # oudere browsers sturen geen Origin; SameSite-cookie beschermt dan
+        if origin == "null":
+            return False
         return urllib.parse.urlparse(origin).netloc.lower() == (self.headers.get("Host") or "").lower()
 
     def send_body(self, code, body, ctype, csp=PROXY_CSP, extra=()):
