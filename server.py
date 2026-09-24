@@ -602,9 +602,21 @@ def main():
         print("Geen wachtwoord ingesteld. Voer eerst uit:  python3 server.py --set-password")
         sys.exit(1)
 
-    server = http.server.ThreadingHTTPServer((HOST, PORT), Handler)
+    port = PORT
+    if "--port" in sys.argv:
+        i = sys.argv.index("--port")
+        try:
+            port = int(sys.argv[i + 1])
+        except (IndexError, ValueError):
+            print("Gebruik: python server.py --port 8010"); sys.exit(1)
+
+    try:
+        server = http.server.ThreadingHTTPServer((HOST, port), Handler)
+    except OSError:
+        print(f"Poort {port} is al in gebruik door een ander programma. Kies een andere, bijvoorbeeld:  --port 8010")
+        sys.exit(1)
     server.daemon_threads = True
-    url = f"http://localhost:{PORT}"
+    url = f"http://localhost:{port}"
     print(f"Mijn IPTV draait op {url}  (stoppen: Ctrl+C)")
     print("Inloggen met wachtwoord: " + ("aan" if AUTH_ENABLED else "uit (alleen bereikbaar vanaf deze computer)"))
     if "--no-browser" not in sys.argv:
