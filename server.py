@@ -862,8 +862,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             cmd += ["-c:v", "copy"] + (["-tag:v", "hvc1"] if qs.get("hevc", [""])[0] == "1" else [])
         else:
             cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
-                    "-vf", "scale=w='min(1920,iw)':h=-2"]
-        cmd += ["-c:a", "aac", "-ac", "2", "-b:a", "192k", "-sn", "-dn",
+                    "-vf", "scale=w='min(1920,iw)':h=-2", "-vsync", "cfr"]
+        # geluid iets rekken/inkorten waar nodig, zodat het bij het beeld blijft lopen ook als de
+        # tijdstempels van de provider niet helemaal kloppen (voorkomt geleidelijk uit de pas lopen)
+        cmd += ["-c:a", "aac", "-ac", "2", "-b:a", "192k", "-af", "aresample=async=1000:first_pts=0", "-sn", "-dn",
+                "-avoid_negative_ts", "make_zero",
                 "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1"]
         vtt = os.path.join(MEDIA_DIR, job + ".vtt")
         sup = os.path.join(MEDIA_DIR, job + ".sup")
