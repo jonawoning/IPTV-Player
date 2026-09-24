@@ -1268,7 +1268,7 @@ dd { margin: 0; font-weight: 700; }
 
   // ---------- speler voor films en series ----------
   // De browser kan geen AC3/DTS-geluid, geen andere audiosporen en geen ondertitels uit MKV-bestanden.
-  // Staat ffmpeg op de server, dan zet die de film om (/media/stream) en haalt hij de ondertitels eruit.
+  // Staat ffmpeg op de server, dan zet die de film om naar HLS (/media/start + /media/hls/...) en haalt hij de ondertitels eruit.
   const vv = $('vodVideo'), playerEl = $('player');
   let mediaCaps = { ffmpeg: false, ocr: false };
   const SUB_SIZES = { S: 3.2, M: 4, L: 5.2, XL: 6.6 };
@@ -1430,6 +1430,7 @@ dd { margin: 0; font-weight: 700; }
     }
     stopPlayback();
     eng.video = vv;
+    const token = eng.token;
     ctx.offset = t;
     ctx.job = newJobId();
     const v = ctx.info.video, copy = videoCopyable(v);
@@ -1442,10 +1443,47 @@ dd { margin: 0; font-weight: 700; }
       q.set('sub', s.index);
       if (!s.text) { q.set('ocr', '1'); if (s.lang) q.set('lang', s.lang); }
     }
-    vv.src = '/media/stream?' + q;
-    vv.play().catch(() => {});
     pMsg(copy ? 'Laden…' : 'Het beeld wordt omgezet naar een formaat dat je browser kan afspelen. Dit kan even duren…');
+    startFfmpegHls(ctx, token, q);
     if (q.has('sub')) pollSubs(ctx, ctx.job, t);
+  }
+
+  // HLS geeft elk stukje film zijn eigen tijdstempels, dus beeld/geluid/ondertitels blijven
+  // synchroon ook na bufferen of doorspoelen (in plaats van één ruwe stream met een geschat
+  // tijdstip erbij, wat bij elke onderbreking een beetje kon verschuiven).
+  async function startFfmpegHls(ctx, token, q) {
+    let ok = false, detail = '';
+    try {
+      const r = await fetch('/media/start?' + q);
+      checkAuth(r);
+      ok = r.ok;
+      if (!ok) detail = (await r.text()).trim();
+    } catch (e) { detail = e.message || String(e); }
+    if (token !== eng.token || vodCtx !== ctx) return;
+    if (!ok) return pMsg('Het omzetten van deze film is mislukt.', true, detail, ctx.urls[0]);
+    if (!(window.Hls && Hls.isSupported())) return pMsg('Deze browser ondersteunt geen HLS-afspelen.', true);
+    const h = eng.hls = new Hls({
+      backBufferLength: 30, manifestLoadingMaxRetry: 2, lowLatencyMode: false,
+      maxBufferLength: 30, maxMaxBufferLength: 60, liveSyncDurationCount: 3,
+      fragLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, nudgeMaxRetry: 10,
+    });
+    let recovered = false;
+    h.on(Hls.Events.ERROR, (_, d) => {
+      if (!d.fatal || token !== eng.token || vodCtx !== ctx) return;
+      if (d.type === Hls.ErrorTypes.MEDIA_ERROR && !recovered) { recovered = true; h.recoverMediaError(); return; }
+      if (!ctx.retried) { ctx.retried = true; pMsg('Verbinding weggevallen, opnieuw verbinden…'); startAt(ctx, absTime(), true); return; }
+      ffmpegFailMsg(ctx);
+    });
+    h.on(Hls.Events.MANIFEST_PARSED, () => { if (token === eng.token) vv.play().catch(() => {}); });
+    h.loadSource('/media/hls/' + ctx.job + '/index.m3u8');
+    h.attachMedia(vv);
+  }
+
+  async function ffmpegFailMsg(ctx) {
+    let detail = '';
+    try { const r = await fetch('/media/log?job=' + ctx.job); if (r.ok) detail = (await r.text()).trim().split('\n').slice(-2).join(' '); } catch {}
+    if (vodCtx !== ctx) return;
+    pMsg('Het omzetten van deze film is mislukt.', true, detail, ctx.urls[0]);
   }
 
   // ffmpeg schrijft de ondertitels mee terwijl de film loopt; regelmatig ophalen
@@ -1489,7 +1527,10 @@ dd { margin: 0; font-weight: 700; }
   }
 
   function closePlayer() {
-    if (vodCtx) clearTimeout(vodCtx.subPoll);
+    if (vodCtx) {
+      clearTimeout(vodCtx.subPoll);
+      if (vodCtx.mode === 'ffmpeg') fetch('/media/stop', { method: 'POST' }).catch(() => {}); // omzetten op de server stoppen
+    }
     stopPlayback();
     closeMenu();
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
@@ -1499,6 +1540,10 @@ dd { margin: 0; font-weight: 700; }
     $('subs').innerHTML = ''; subsShown = '';
     if (detailCtx) { updateDetailButtons(); if (detailCtx.seasons) renderSeasons(); }
   }
+  // Tabblad/browser dicht terwijl een film wordt omgezet: laat de server het toch nog weten.
+  window.addEventListener('pagehide', () => {
+    if (vodCtx && vodCtx.mode === 'ffmpeg') { try { navigator.sendBeacon('/media/stop'); } catch {} }
+  });
 
   // ----- bediening -----
   let seeking = false, lastSave = 0, uiTimer = 0;
@@ -1580,9 +1625,9 @@ dd { margin: 0; font-weight: 700; }
     delete resume[ctx.key]; store.set('iptv.resume', resume);
     if (ctx.next) ctx.next();
   });
-  // Omzetten mislukt? Eerst één keer automatisch opnieuw verbinden (bijv. na lang pauzeren,
-  // waarbij de provider de verbinding kan hebben afgebroken); lukt dat ook niet, dan pas melden.
-  vv.addEventListener('error', async () => {
+  // Extra vangnet naast de HLS-foutafhandeling hierboven (bijv. bij een decodeerfout die hls.js
+  // zelf niet als fataal ziet). Eerst één keer automatisch opnieuw verbinden, dan pas melden.
+  vv.addEventListener('error', () => {
     const ctx = vodCtx;
     if (!ctx || ctx.mode !== 'ffmpeg' || !vv.getAttribute('src')) return;
     if (!ctx.retried) {
@@ -1591,11 +1636,7 @@ dd { margin: 0; font-weight: 700; }
       startAt(ctx, absTime(), true);
       return;
     }
-    const job = ctx.job;
-    let detail = '';
-    try { const r = await fetch('/media/log?job=' + job); if (r.ok) detail = (await r.text()).trim().split('\n').slice(-2).join(' '); } catch {}
-    if (vodCtx !== ctx || ctx.job !== job) return;
-    pMsg('Het omzetten van deze film is mislukt.', true, detail, ctx.urls[0]);
+    ffmpegFailMsg(ctx);
   });
 
   // ----- menu's voor audio en ondertitels -----

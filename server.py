@@ -62,7 +62,9 @@ MEDIA_DIR = tempfile.mkdtemp(prefix="iptv-media-")
 atexit.register(shutil.rmtree, MEDIA_DIR, True)
 TEXT_SUBS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
 MAX_JOBS = 3
+JOB_STALE_AFTER = 60  # geen /media/hls/... of /media/subs meer opgevraagd: speler is waarschijnlijk weg
 JOB_RE = re.compile(r"^[A-Za-z0-9_-]{8,40}$")
+HLS_FILE_RE = re.compile(r"^/media/hls/([A-Za-z0-9_-]{8,40})/(index\.m3u8|seg\d{5}\.ts)$")
 _jobs_lock = threading.Lock()
 _jobs = {}        # eigenaar (sessie) -> {"id": job-id, "proc": Popen}
 _job_owner = {}   # job-id -> eigenaar
@@ -87,6 +89,32 @@ def ocr_tool():
 
 def tess_lang(code):
     return TESS_LANG.get((code or "").lower()[:3], "eng")
+
+
+def cleanup_job_files(job_id):
+    """HLS-segmenten en ondertitelbestanden van een gestopte/vervangen opdracht opruimen."""
+    shutil.rmtree(os.path.join(MEDIA_DIR, job_id), ignore_errors=True)
+    for ext in (".vtt", ".sup"):
+        try:
+            os.remove(os.path.join(MEDIA_DIR, job_id + ext))
+        except OSError:
+            pass
+
+
+def sweep_stale_jobs():
+    """Achtergrondtaak: films die niemand meer bekijkt (browser dicht, tabblad weg) stoppen
+    vanzelf, ook als de speler geen /media/stop kon sturen (bijv. bij het sluiten van het tabblad)."""
+    while True:
+        time.sleep(20)
+        now = time.time()
+        with _jobs_lock:
+            stale = [(owner, j) for owner, j in _jobs.items() if now - j.get("last_seen", now) > JOB_STALE_AFTER]
+            for owner, _ in stale:
+                _jobs.pop(owner, None)
+        for _, job in stale:
+            if job["proc"].poll() is None:
+                job["proc"].kill()
+            cleanup_job_files(job["id"])
 
 
 def internal_url(url):
@@ -709,8 +737,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/proxy":
             return self.handle_proxy(urllib.parse.urlparse(self.path))
         if path.startswith("/media/"):
+            m = HLS_FILE_RE.match(path)
+            if m:
+                return self.handle_hls_file(m.group(1), m.group(2))
             qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-            routes = {"/media/probe": self.handle_probe, "/media/stream": self.handle_media_stream,
+            routes = {"/media/probe": self.handle_probe, "/media/start": self.handle_media_start,
                       "/media/subs": self.handle_media_subs, "/media/log": self.handle_media_log}
             if path in routes:
                 return routes[path](qs)
@@ -727,6 +758,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == "/logout":
             end_session(self.session_token())
             return self.redirect("/login", cookie=self.cookie("", 0))
+        if path == "/media/stop":
+            self.stop_job(self.owner())
+            return self.send_body(200, b"", "text/plain")
         return self.send_text_error(404, "Niet gevonden")
 
     def handle_login(self):
@@ -813,18 +847,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def stop_job(self, owner):
         with _jobs_lock:
             job = _jobs.pop(owner, None)
-        if job and job["proc"].poll() is None:
+        if not job:
+            return False
+        was_running = job["proc"].poll() is None
+        if was_running:
             job["proc"].kill()
             try:
                 job["proc"].wait(timeout=5)
             except subprocess.TimeoutExpired:
                 pass
-            return True
-        return False
+        cleanup_job_files(job["id"])
+        return was_running
 
-    def handle_media_stream(self, qs):
-        """Film omzetten naar iets wat elke browser kan: MP4 met AAC-geluid (en zo nodig H.264-beeld),
-        met het gekozen audiospoor, vanaf een bepaald moment. Ondertitels gaan naar een apart bestand."""
+    def handle_media_start(self, qs):
+        """Film omzetten naar HLS: kleine segmentjes (.ts) plus een afspeellijst, met het gekozen
+        audiospoor vanaf een bepaald moment. Elk segment heeft zijn eigen tijdstempels, dus beeld,
+        geluid en ondertitels blijven ook na bufferen of doorspoelen synchroon. Ondertitels gaan
+        naar een apart bestand. Wacht tot het eerste segment klaarstaat (of het mislukt)."""
         ffmpeg, _ = media_tools()
         if not ffmpeg:
             return self.send_text_error(501, "ffmpeg is niet geïnstalleerd op de server")
@@ -853,11 +892,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if sum(1 for j in _jobs.values() if j["proc"].poll() is None) >= MAX_JOBS:
                 return self.send_text_error(503, "Te veel films tegelijk aan het omzetten")
 
+        job_dir = os.path.join(MEDIA_DIR, job)
+        os.makedirs(job_dir, exist_ok=True)
+        playlist = os.path.join(job_dir, "index.m3u8")
+
         cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
                "-protocol_whitelist", "http,tcp", "-headers", internal_headers()]
         if start > 0:
             cmd += ["-ss", f"{start:.2f}"]
-        cmd += ["-i", internal_url(url), "-map", "0:v:0?", "-map", f"0:{audio}" if audio >= 0 else "0:a:0?"]
+        cmd += ["-re", "-i", internal_url(url), "-map", "0:v:0?", "-map", f"0:{audio}" if audio >= 0 else "0:a:0?"]
         if copy_video:
             cmd += ["-c:v", "copy"] + (["-tag:v", "hvc1"] if qs.get("hevc", [""])[0] == "1" else [])
         else:
@@ -867,7 +910,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # tijdstempels van de provider niet helemaal kloppen (voorkomt geleidelijk uit de pas lopen)
         cmd += ["-c:a", "aac", "-ac", "2", "-b:a", "192k", "-af", "aresample=async=1000:first_pts=0", "-sn", "-dn",
                 "-avoid_negative_ts", "make_zero",
-                "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1"]
+                "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event",
+                "-hls_segment_filename", os.path.join(job_dir, "seg%05d.ts"), playlist]
         vtt = os.path.join(MEDIA_DIR, job + ".vtt")
         sup = os.path.join(MEDIA_DIR, job + ".sup")
         if sub >= 0:
@@ -876,10 +920,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else:
                 cmd += ["-map", f"0:{sub}", "-c:s", "webvtt", "-f", "webvtt", "-flush_packets", "1", "-y", vtt]
 
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
         log = collections.deque(maxlen=20)
         with _jobs_lock:
-            _jobs[owner] = {"id": job, "proc": proc}
+            _jobs[owner] = {"id": job, "proc": proc, "last_seen": time.time()}
             _job_owner[job] = owner
             _job_logs[job] = log
             while len(_job_logs) > 50:  # oude logboeken opruimen
@@ -894,36 +938,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if use_ocr:
             threading.Thread(target=ocr_worker, args=(sup, vtt, lang, proc, log), daemon=True).start()
 
-        try:
-            first = proc.stdout.read1(CHUNK)
-            if not first:
-                proc.wait(timeout=5)
-                time.sleep(0.2)
-                msg = log[-1] if log else "onbekende fout"
-                print(f"[film] omzetten mislukt: {msg}")
-                return self.send_text_error(502, "Omzetten mislukt: " + msg)
-            self.csp = PROXY_CSP
-            self.send_response(200)
-            self.send_header("Content-Type", "video/mp4")
-            self.end_headers()
+        deadline = time.time() + 20
+        while time.time() < deadline:
             try:
-                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                with open(playlist, encoding="utf-8") as f:
+                    if ".ts" in f.read():
+                        return self.send_body(200, b'{"ok": true}', "application/json")
             except OSError:
                 pass
-            self.wfile.write(first)
-            while True:
-                chunk = proc.stdout.read1(CHUNK)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass  # gestopt, doorgespoeld of ander spoor gekozen
-        finally:
-            if proc.poll() is None:
-                proc.kill()
-            with _jobs_lock:
-                if _jobs.get(owner, {}).get("proc") is proc:
-                    _jobs.pop(owner, None)
+            if proc.poll() is not None:
+                msg = log[-1] if log else "onbekende fout"
+                print(f"[film] omzetten mislukt: {msg}")
+                self.stop_job(owner)
+                return self.send_text_error(502, "Omzetten mislukt: " + msg)
+            time.sleep(0.2)
+        self.stop_job(owner)
+        return self.send_text_error(504, "Het omzetten duurde te lang om te starten")
+
+    def handle_hls_file(self, job, filename):
+        if _job_owner.get(job) != self.owner():
+            return self.send_text_error(404, "Onbekende opdracht")
+        self.touch_job(job)
+        try:
+            with open(os.path.join(MEDIA_DIR, job, filename), "rb") as f:
+                body = f.read()
+        except OSError:
+            return self.send_text_error(404, "Niet gevonden")
+        ctype = "application/vnd.apple.mpegurl" if filename.endswith(".m3u8") else "video/mp2t"
+        self.send_body(200, body, ctype)
 
     def own_job(self, qs):
         job = qs.get("job", [""])[0]
@@ -932,11 +974,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return None
         return job
 
+    def touch_job(self, job):
+        with _jobs_lock:
+            entry = _jobs.get(_job_owner.get(job))
+            if entry and entry["id"] == job:
+                entry["last_seen"] = time.time()
+
     def handle_media_subs(self, qs):
         """De ondertitels die ffmpeg tot nu toe uit de film heeft gehaald."""
         job = self.own_job(qs)
         if not job:
             return
+        self.touch_job(job)
         try:
             with open(os.path.join(MEDIA_DIR, job + ".vtt"), "rb") as f:
                 body = f.read()
@@ -1157,6 +1206,7 @@ def main():
         print(f"Poort {port} is al in gebruik door een ander programma. Kies een andere, bijvoorbeeld:  --port 8010")
         sys.exit(1)
     server.daemon_threads = True
+    threading.Thread(target=sweep_stale_jobs, daemon=True).start()
     url = f"http://localhost:{port}"
     print(f"Mijn IPTV draait op {url}  (stoppen: Ctrl+C)")
     print("Inloggen met wachtwoord: " + ("aan" if AUTH_ENABLED else "uit (alleen bereikbaar vanaf deze computer)"))
