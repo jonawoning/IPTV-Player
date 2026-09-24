@@ -69,10 +69,24 @@ _job_owner = {}   # job-id -> eigenaar
 _job_logs = {}    # job-id -> laatste regels van ffmpeg
 _internal_streams = {}  # url -> open verbinding met de provider (voor ffmpeg)
 
+# talen die ffprobe teruggeeft (3 letters) -> taalpakket van tesseract
+TESS_LANG = {"nld": "nld", "dut": "nld", "eng": "eng", "deu": "deu", "ger": "deu", "fra": "fra", "fre": "fra",
+             "spa": "spa", "ita": "ita", "por": "por", "swe": "swe", "dan": "dan", "nor": "nor", "nob": "nor",
+             "fin": "fin", "pol": "pol", "rus": "rus", "tur": "tur"}
+
 
 def media_tools():
     """Pas bij gebruik zoeken: installeer je ffmpeg later, dan werkt het meteen."""
     return shutil.which("ffmpeg"), shutil.which("ffprobe")
+
+
+def ocr_tool():
+    """Pas bij gebruik zoeken: installeer tesseract later, dan werkt beeldondertiteling meteen."""
+    return shutil.which("tesseract")
+
+
+def tess_lang(code):
+    return TESS_LANG.get((code or "").lower()[:3], "eng")
 
 
 def internal_url(url):
@@ -229,6 +243,211 @@ def _open_upstream(url, timeout, range_header=None):
         except Exception as e:
             return None, (502, f"Kan provider niet bereiken: {type(e).__name__}")
     return None, last
+
+
+# ---------- beeldondertitels (PGS) lezen met OCR ----------
+# Sommige films hebben ondertitels als kant-en-klare plaatjes (PGS/"beeldondertitels", gebruikelijk
+# bij Blu-ray-rips) in plaats van tekst. Een browser kan alleen tekst tonen, dus tesseract (OCR) leest
+# elk plaatje. ffmpeg schrijft de rauwe PGS-stroom (.sup) weg terwijl de film speelt; wij lezen dat
+# bestand net als "tail -f" bij en zetten steeds een klaar plaatje om in een regel ondertiteling.
+
+def _pgs_rle_decode(data, width, height):
+    """Eén PGS-beeld (RLE van paletindexen) uitpakken tot één byte per pixel (de paletindex)."""
+    out = bytearray(width * height)
+    x = y = i = 0
+    n = len(data)
+    while i < n and y < height:
+        b0 = data[i]; i += 1
+        if b0:
+            color, length = b0, 1
+        else:
+            if i >= n:
+                break
+            b1 = data[i]; i += 1
+            if b1 == 0:  # einde van de regel
+                x, y = 0, y + 1
+                continue
+            flag = b1 >> 6
+            if flag == 0:
+                color, length = 0, b1 & 0x3F
+            elif flag == 1:
+                if i >= n:
+                    break
+                length = ((b1 & 0x3F) << 8) | data[i]; i += 1
+                color = 0
+            elif flag == 2:
+                if i >= n:
+                    break
+                color, length = data[i], b1 & 0x3F; i += 1
+            else:
+                if i + 1 >= n:
+                    break
+                length = ((b1 & 0x3F) << 8) | data[i]; i += 1
+                color = data[i]; i += 1
+        end = min(x + length, width)
+        if end > x:
+            out[y * width + x:y * width + end] = bytes([color]) * (end - x)
+        x = end
+        if x >= width:
+            x, y = 0, y + 1
+    return out
+
+
+def _pgs_to_pgm(pixels, width, height, alpha_of, threshold=80):
+    """Paletindexen omzetten naar een grijswaarde-afbeelding: tekst zwart, de rest wit (goed leesbaar voor OCR)."""
+    table = bytes(0 if alpha_of.get(i, 0) >= threshold else 255 for i in range(256))
+    body = bytes(pixels).translate(table)
+    return f"P5\n{width} {height}\n255\n".encode("ascii") + body
+
+
+def _ocr_image(tesseract, pgm_bytes, lang, log):
+    fd, path = tempfile.mkstemp(suffix=".pgm", dir=MEDIA_DIR)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(pgm_bytes)
+        out = subprocess.run([tesseract, path, "-", "--psm", "6", "-l", lang], capture_output=True, timeout=20)
+        if out.returncode != 0 and lang != "eng":
+            out = subprocess.run([tesseract, path, "-", "--psm", "6", "-l", "eng"], capture_output=True, timeout=20)
+        if out.returncode != 0:
+            lines = out.stderr.decode("utf-8", "replace").strip().splitlines()
+            log.append("[ocr] " + (lines[-1] if lines else "onbekende fout"))
+            return ""
+        return re.sub(r"\n{2,}", "\n", out.stdout.decode("utf-8", "replace").strip())
+    except (subprocess.TimeoutExpired, OSError) as e:
+        log.append(f"[ocr] {type(e).__name__}")
+        return ""
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def _srt_time(t):
+    t = max(0.0, t)
+    h, rest = divmod(t, 3600); m, s = divmod(rest, 60)
+    return f"{int(h):02d}:{int(m):02d}:{s:06.3f}".replace(".", ",")
+
+
+def ocr_worker(sup_path, vtt_path, lang, proc, log):
+    """Leest de groeiende .sup van ffmpeg bij, herkent complete PGS-plaatjes en OCR't ze naar vtt_path."""
+    tesseract = ocr_tool()
+    if not tesseract:
+        return
+    try:
+        open(vtt_path, "w", encoding="utf-8").close()
+    except OSError:
+        return
+    log.append(f"[ocr] gestart (taal: {lang})")
+
+    buf = b""
+    palette, objects = {}, {}
+    pending = None
+    cue_no = 0
+
+    def flush(end_pts):
+        nonlocal cue_no
+        if not pending or not pending["objs"]:
+            return
+        texts = []
+        for oid in pending["objs"]:
+            obj = objects.get(oid)
+            if not obj or "data" not in obj or not obj["width"] or not obj["height"]:
+                continue
+            pixels = _pgs_rle_decode(bytes(obj["data"]), obj["width"], obj["height"])
+            pgm = _pgs_to_pgm(pixels, obj["width"], obj["height"], palette)
+            t = _ocr_image(tesseract, pgm, lang, log)
+            if t:
+                texts.append(t)
+        if texts and end_pts > pending["pts"]:
+            cue_no += 1
+            block = f"{cue_no}\n{_srt_time(pending['pts'])} --> {_srt_time(end_pts)}\n" + "\n".join(texts) + "\n\n"
+            try:
+                with open(vtt_path, "a", encoding="utf-8") as f:
+                    f.write(block)
+            except OSError:
+                pass
+
+    fh = None
+    try:
+        while True:
+            if fh is None:
+                try:
+                    fh = open(sup_path, "rb")
+                except OSError:
+                    if proc.poll() is not None:
+                        return
+                    time.sleep(0.3)
+                    continue
+            chunk = fh.read(65536)
+            if chunk:
+                buf += chunk
+            while len(buf) >= 13:
+                if buf[0:2] != b"PG":
+                    nxt = buf.find(b"PG", 1)
+                    if nxt < 0:
+                        buf = buf[-1:]
+                        break
+                    buf = buf[nxt:]
+                    continue
+                pts90 = int.from_bytes(buf[2:6], "big")
+                seg_type = buf[10]
+                seg_len = int.from_bytes(buf[11:13], "big")
+                if len(buf) < 13 + seg_len:
+                    break  # nog niet compleet binnen; volgende ronde opnieuw proberen
+                data = buf[13:13 + seg_len]
+                buf = buf[13 + seg_len:]
+                pts = pts90 / 90000.0
+
+                if seg_type == 0x14:  # PDS: palet (kleur negeren, alleen dekking/alpha telt)
+                    i = 2
+                    while i + 5 <= len(data):
+                        palette[data[i]] = data[i + 4]
+                        i += 5
+                elif seg_type == 0x15:  # ODS: (deel van) een plaatje
+                    if len(data) < 4:
+                        continue
+                    oid = int.from_bytes(data[0:2], "big")
+                    first = data[3] & 0x40
+                    if first:
+                        if len(data) < 11:
+                            continue
+                        w = int.from_bytes(data[7:9], "big")
+                        h = int.from_bytes(data[9:11], "big")
+                        objects[oid] = {"width": w, "height": h, "data": bytearray(data[11:])}
+                    else:
+                        obj = objects.get(oid)
+                        if obj is not None:
+                            obj["data"].extend(data[4:])
+                elif seg_type == 0x16:  # PCS: nieuwe presentatie (welke plaatjes nu te zien zijn)
+                    if len(data) < 11:
+                        continue
+                    n_obj = data[10]
+                    obj_ids, off = [], 11
+                    for _ in range(n_obj):
+                        if off + 8 > len(data):
+                            break
+                        obj_ids.append(int.from_bytes(data[off:off + 2], "big"))
+                        off += 16 if (data[off + 3] & 0x40) else 8
+                    if not obj_ids:
+                        flush(pts)  # scherm leeg: vorige ondertitel eindigt hier
+                        pending = None
+                    elif not (pending and pending["objs"] == obj_ids):
+                        flush(pts)
+                        pending = {"pts": pts, "objs": obj_ids}
+                    # anders: dezelfde ondertitel opnieuw aangeboden (toegangspunt); gewoon door laten lopen
+            if not chunk:
+                if proc.poll() is not None and len(buf) < 13:
+                    break
+                time.sleep(0.5)
+    finally:
+        if fh:
+            fh.close()
+        flush(pending["pts"] + 8 if pending else 0)  # laatste ondertitel: duur onbekend, gok 8s
+        try:
+            os.remove(sup_path)
+        except OSError:
+            pass
 
 
 # ---------- wachtwoord en sessies ----------
@@ -485,7 +704,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_body(200, body, "text/html; charset=utf-8", csp=PAGE_CSP)
         if path == "/session":
             ffmpeg, ffprobe = media_tools()
-            info = {"auth": AUTH_ENABLED, "ffmpeg": bool(ffmpeg and ffprobe)}
+            info = {"auth": AUTH_ENABLED, "ffmpeg": bool(ffmpeg and ffprobe), "ocr": bool(ocr_tool())}
             return self.send_body(200, json.dumps(info).encode(), "application/json")
         if path == "/proxy":
             return self.handle_proxy(urllib.parse.urlparse(self.path))
@@ -624,6 +843,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not JOB_RE.match(job):
             return self.send_text_error(400, "Ongeldige opdracht")
         copy_video = qs.get("v", [""])[0] == "copy"
+        use_ocr = sub >= 0 and qs.get("ocr", [""])[0] == "1" and bool(ocr_tool())
+        lang = tess_lang(qs.get("lang", [""])[0])
 
         owner = self.owner()
         if self.stop_job(owner):
@@ -645,8 +866,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cmd += ["-c:a", "aac", "-ac", "2", "-b:a", "192k", "-sn", "-dn",
                 "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1"]
         vtt = os.path.join(MEDIA_DIR, job + ".vtt")
+        sup = os.path.join(MEDIA_DIR, job + ".sup")
         if sub >= 0:
-            cmd += ["-map", f"0:{sub}", "-c:s", "webvtt", "-f", "webvtt", "-flush_packets", "1", "-y", vtt]
+            if use_ocr:
+                cmd += ["-map", f"0:{sub}", "-c:s", "copy", "-f", "sup", "-y", sup]
+            else:
+                cmd += ["-map", f"0:{sub}", "-c:s", "webvtt", "-f", "webvtt", "-flush_packets", "1", "-y", vtt]
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
         log = collections.deque(maxlen=20)
@@ -663,6 +888,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for line in proc.stderr:
                 log.append(mask(line.decode("utf-8", "replace").rstrip()))
         threading.Thread(target=collect, daemon=True).start()
+        if use_ocr:
+            threading.Thread(target=ocr_worker, args=(sup, vtt, lang, proc, log), daemon=True).start()
 
         try:
             first = proc.stdout.read1(CHUNK)

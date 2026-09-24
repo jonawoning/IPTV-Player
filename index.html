@@ -1270,7 +1270,7 @@ dd { margin: 0; font-weight: 700; }
   // De browser kan geen AC3/DTS-geluid, geen andere audiosporen en geen ondertitels uit MKV-bestanden.
   // Staat ffmpeg op de server, dan zet die de film om (/media/stream) en haalt hij de ondertitels eruit.
   const vv = $('vodVideo'), playerEl = $('player');
-  let mediaCaps = { ffmpeg: false };
+  let mediaCaps = { ffmpeg: false, ocr: false };
   const SUB_SIZES = { S: 3.2, M: 4, L: 5.2, XL: 6.6 };
   let prefs = Object.assign({ size: 'M', bg: false, audioLang: '', subLang: '' }, store.get('iptv.mediaPrefs', {}));
   const savePrefs = () => store.set('iptv.mediaPrefs', prefs);
@@ -1438,7 +1438,10 @@ dd { margin: 0; font-weight: 700; }
     const a = ctx.info.audio[ctx.audio];
     if (a) q.set('audio', a.index);
     const s = typeof ctx.subSel === 'number' && ctx.subSel >= 0 ? ctx.info.subs[ctx.subSel] : null;
-    if (s && s.text) q.set('sub', s.index);
+    if (s) {
+      q.set('sub', s.index);
+      if (!s.text) { q.set('ocr', '1'); if (s.lang) q.set('lang', s.lang); }
+    }
     vv.src = '/media/stream?' + q;
     vv.play().catch(() => {});
     pMsg(copy ? 'Laden…' : 'Het beeld wordt omgezet naar een formaat dat je browser kan afspelen. Dit kan even duren…');
@@ -1621,7 +1624,11 @@ dd { margin: 0; font-weight: 700; }
       if (info) {
         html += info.subs.map((s, i) => {
           const l = trackLabel(s, i, 'sub');
-          return opt(`data-sub="${i}"`, ctx.subSel === i, l.name, s.text ? l.sub : 'Beeldondertitels: kan de app niet tonen', !s.text);
+          const ocrable = !s.text && mediaCaps.ocr && s.codec === 'hdmv_pgs_subtitle';
+          const sub = s.text ? l.sub
+            : ocrable ? [l.sub, 'Beeldondertitels: via OCR, kan afwijken'].filter(Boolean).join(' · ')
+            : 'Beeldondertitels: kan de app niet tonen';
+          return opt(`data-sub="${i}"`, ctx.subSel === i, l.name, sub, !s.text && !ocrable);
         }).join('');
         if (!info.subs.length) html += '<p class="note">Deze film heeft geen ingebouwde ondertitels.</p>';
       } else html += noTools;
@@ -1813,9 +1820,14 @@ dd { margin: 0; font-weight: 700; }
     if (!s) return;
     if (s.auth) $('siteCard').hidden = false;
     mediaCaps.ffmpeg = !!s.ffmpeg;
-    $('ffInfo').innerHTML = s.ffmpeg
+    mediaCaps.ocr = !!s.ocr;
+    let ffMsg = s.ffmpeg
       ? 'ffmpeg staat op de server: films met oude geluidsformaten spelen met geluid af, en je kunt audiosporen en ingebouwde ondertitels kiezen.'
       : 'ffmpeg staat nog niet op de server. Zonder ffmpeg hebben sommige (oudere) films geen geluid en kun je geen audiospoor of ingebouwde ondertitels kiezen. Installeer het met <b>sudo apt install ffmpeg</b>; daarna werkt het meteen.';
+    if (s.ffmpeg) ffMsg += s.ocr
+      ? ' Beeldondertitels (PGS) worden automatisch met OCR gelezen.'
+      : ' Beeldondertitels (PGS) kunnen ook automatisch gelezen worden: installeer <b>tesseract-ocr</b> (en eventueel een taalpakket, bijv. <b>tesseract-ocr-nld</b>).';
+    $('ffInfo').innerHTML = ffMsg;
   }).catch(() => {});
   $('siteLogout').addEventListener('click', async () => {
     stopPlayback();

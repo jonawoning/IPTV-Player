@@ -20,6 +20,7 @@ It has no accounts, no build step and no dependencies to install. You only need 
 
 - Python 3.8 or newer. Only the standard library is used, so there's nothing to `pip install`.
 - Recommended: [ffmpeg](https://ffmpeg.org/) (`sudo apt install ffmpeg` on Ubuntu/Debian). Without it, films whose sound is in AC3, DTS or MP2 (common in older films) play without sound, and you can't switch audio tracks or show built-in subtitles. The app detects ffmpeg automatically; you don't have to restart it.
+- Optional: [tesseract](https://github.com/tesseract-ocr/tesseract) (`sudo apt install tesseract-ocr tesseract-ocr-nld` on Ubuntu/Debian, plus a language package for each subtitle language you expect). Picture-based subtitles (PGS, common in Blu-ray rips) are normally just images a browser can't display as text; with tesseract installed, the app reads them with OCR instead. Detected automatically, just like ffmpeg. VobSub (older DVD-style picture subtitles) isn't supported yet.
 - A modern browser: Chrome, Edge, Firefox or Safari
 
 The app's interface is in Dutch.
@@ -169,7 +170,7 @@ The message under the player says why:
 Go to **Instellingen → Live TV: buffer** (Settings) and choose 10 or 20 seconds. The app also builds up extra buffer on its own when a channel stalls repeatedly.
 
 **A movie has no sound, or you can't choose the audio or subtitles.**
-Browsers can't play AC3/DTS sound, switch audio tracks or read subtitles inside MKV files. Install ffmpeg on the machine that runs `server.py`; the server then converts the sound to AAC and extracts the subtitles on the fly. **Settings → Films en series** shows whether ffmpeg was found. Picture-based subtitles (PGS, VobSub) can't be shown; load a `.srt` file instead.
+Browsers can't play AC3/DTS sound, switch audio tracks or read subtitles inside MKV files. Install ffmpeg on the machine that runs `server.py`; the server then converts the sound to AAC and extracts the subtitles on the fly. **Settings → Films en series** shows whether ffmpeg was found. Picture-based PGS subtitles are read with OCR if tesseract is installed (see Requirements); VobSub isn't supported — load a `.srt` file instead.
 
 **A movie won't play (often `.mkv`).**
 Some formats or codecs aren't supported by browsers. Click **Kopieer link voor VLC** (Copy link for VLC) and open the stream in [VLC](https://www.videolan.org/).
