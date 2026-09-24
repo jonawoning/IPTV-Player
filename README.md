@@ -11,6 +11,7 @@ It has no accounts, no build step and no dependencies to install. You only need 
 - **Movies**: a poster grid with ratings, plots and cast, sortable by newest, A–Z or rating
 - **Series**: seasons and episodes; the next episode starts automatically
 - **Continue watching**: remembers where you stopped in a movie or episode
+- **Audio and subtitles**: pick the audio language and built-in subtitles, load your own `.srt`/`.vtt`/`.ass` file, and set the subtitle size, style and timing (requires ffmpeg, see below)
 - **Favorites** for channels, movies and series
 - **Adjustable live buffer**: trade a few seconds of delay for smoother playback
 - **Three ways to sign in**: Xtream Codes login, an M3U link, or a local `.m3u` file
@@ -18,6 +19,7 @@ It has no accounts, no build step and no dependencies to install. You only need 
 ## Requirements
 
 - Python 3.8 or newer. Only the standard library is used, so there's nothing to `pip install`.
+- Recommended: [ffmpeg](https://ffmpeg.org/) (`sudo apt install ffmpeg` on Ubuntu/Debian). Without it, films whose sound is in AC3, DTS or MP2 (common in older films) play without sound, and you can't switch audio tracks or show built-in subtitles. The app detects ffmpeg automatically; you don't have to restart it.
 - A modern browser: Chrome, Edge, Firefox or Safari
 
 The app's interface is in Dutch.
@@ -165,6 +167,9 @@ The message under the player says why:
 
 **Live TV keeps buffering.**
 Go to **Instellingen → Live TV: buffer** (Settings) and choose 10 or 20 seconds. The app also builds up extra buffer on its own when a channel stalls repeatedly.
+
+**A movie has no sound, or you can't choose the audio or subtitles.**
+Browsers can't play AC3/DTS sound, switch audio tracks or read subtitles inside MKV files. Install ffmpeg on the machine that runs `server.py`; the server then converts the sound to AAC and extracts the subtitles on the fly. **Settings → Films en series** shows whether ffmpeg was found. Picture-based subtitles (PGS, VobSub) can't be shown; load a `.srt` file instead.
 
 **A movie won't play (often `.mkv`).**
 Some formats or codecs aren't supported by browsers. Click **Kopieer link voor VLC** (Copy link for VLC) and open the stream in [VLC](https://www.videolan.org/).

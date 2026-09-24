@@ -222,9 +222,49 @@ main { flex: 1; min-width: 0; display: flex; min-height: 0; }
 .ep-t small { color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-top: 2px; }
 
 /* ---------- speler ---------- */
-.player { position: fixed; inset: 0; z-index: 30; background: #000; }
+.player { position: fixed; inset: 0; z-index: 30; background: #000; --sub-size: 4vh; }
 .player-top { position: absolute; inset: 0 0 auto 0; display: flex; align-items: center; gap: 14px; padding: 16px 20px 40px; background: linear-gradient(180deg, rgba(0,0,0,.8), transparent); transition: opacity .3s; }
-.player:not(:hover) .player-top.fade { opacity: 0; }
+.player.idle { cursor: none; }
+.player.idle .player-top, .player.idle .pbar { opacity: 0; pointer-events: none; }
+/* ondertitels: eigen weergave, zodat grootte en stijl in te stellen zijn */
+.subs { position: absolute; left: 6%; right: 6%; bottom: 7%; text-align: center; pointer-events: none; transition: bottom .25s; line-height: 1.35; }
+.player:not(.idle) .subs { bottom: 128px; }
+.subs span { font-size: max(15px, var(--sub-size)); font-weight: 600; color: #fff; padding: .05em .3em; border-radius: 4px;
+  text-shadow: 0 0 3px #000, 0 0 3px #000, 0 2px 4px #000; -webkit-box-decoration-break: clone; box-decoration-break: clone; white-space: pre-line; }
+.subs.bg span { background: rgba(0,0,0,.72); text-shadow: none; }
+/* bediening onderin */
+.pbar { position: absolute; inset: auto 0 0 0; padding: 40px 20px calc(14px + env(safe-area-inset-bottom, 0px)); background: linear-gradient(0deg, rgba(0,0,0,.85), transparent); transition: opacity .3s; }
+.seek-row input { width: 100%; }
+.pbar input[type=range] { accent-color: var(--accent); cursor: pointer; }
+.pbar-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
+.pbar-row .grow { flex: 1; }
+.pbtn { display: inline-flex; align-items: center; gap: 7px; background: none; border: 0; color: #fff; padding: 8px; border-radius: 10px; font-weight: 700; font-size: 13px; }
+.pbtn:hover, .pbtn[aria-expanded=true] { background: rgba(255,255,255,.12); }
+.pbtn svg { width: 24px; height: 24px; fill: currentColor; flex: none; }
+.pbtn text { fill: currentColor; }
+.pbtn .i-pause, .player.playing .pbtn .i-play { display: none; }
+.player.playing .pbtn .i-pause { display: block; }
+.pbtn .i-muted, .player.muted .pbtn .i-vol { display: none; }
+.player.muted .pbtn .i-muted { display: block; }
+#pVol { width: 90px; }
+.ptime { color: #d7dcea; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; margin-left: 8px; white-space: nowrap; }
+.pmenu { position: absolute; right: 20px; bottom: 96px; width: min(360px, calc(100vw - 40px)); max-height: 60vh; overflow-y: auto;
+  background: rgba(14,18,26,.96); border: 1px solid var(--line); border-radius: 14px; padding: 8px; backdrop-filter: blur(8px); box-shadow: 0 20px 50px rgba(0,0,0,.6); }
+.pmenu h4 { margin: 10px 10px 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+.pmenu .opt { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; background: none; border: 0; padding: 9px 10px; border-radius: 9px; color: var(--text); font-weight: 600; }
+.pmenu .opt:hover:not(:disabled) { background: var(--hover); }
+.pmenu .opt:disabled { color: var(--dim); cursor: default; }
+.pmenu .opt .ck { width: 18px; flex: none; color: var(--accent-2); }
+.pmenu .opt small { display: block; color: var(--muted); font-weight: 500; }
+.pmenu .note { margin: 6px 10px 10px; color: var(--muted); font-size: 13px; }
+.pmenu .seg-row { display: flex; gap: 6px; padding: 4px 10px 8px; flex-wrap: wrap; align-items: center; }
+.pmenu .chipb { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 12px; font-weight: 700; color: var(--muted); }
+.pmenu .chipb[aria-pressed=true] { background: var(--grad); color: #fff; border-color: transparent; }
+.pmenu .delay { min-width: 64px; text-align: center; font-weight: 700; font-variant-numeric: tabular-nums; }
+@media (max-width: 760px) {
+  .pbtn.wide span, #pVol { display: none; }
+  .player:not(.idle) .subs { bottom: 110px; }
+}
 .player-top h2 { margin: 0; font-size: 17px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .player-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); max-width: min(560px, 90vw); text-align: center; background: rgba(12,16,23,.9); border: 1px solid var(--line); border-radius: var(--r); padding: 22px 24px; }
 .player-msg.error { border-color: #5a2630; }
@@ -388,6 +428,11 @@ dd { margin: 0; font-weight: 700; }
             <button class="btn" id="logoutBtn">Andere playlist / uitloggen</button>
           </div>
         </div>
+        <div class="card">
+          <h3>Films en series</h3>
+          <p id="ffInfo">Controleren…</p>
+          <p>Ondertitels en audio kies je tijdens het kijken met de knoppen rechtsonder in de speler. Grootte en stijl van de ondertitels worden onthouden, net als je voorkeurstaal.</p>
+        </div>
         <div class="card" id="siteCard" hidden>
           <h3>Deze website</h3>
           <p>Meld je af op dit apparaat. Je moet daarna opnieuw het wachtwoord van de server invullen.</p>
@@ -441,12 +486,38 @@ dd { margin: 0; font-weight: 700; }
 
 <!-- volledig scherm speler voor films en series -->
 <div class="player" id="player" hidden>
-  <video id="vodVideo" controls playsinline></video>
+  <video id="vodVideo" playsinline></video>
+  <div class="subs" id="subs"></div>
   <div class="player-top" id="playerTop">
     <button class="back" id="pClose">← Terug</button>
     <h2 id="pTitle"></h2>
   </div>
   <div class="player-msg" id="pMsg" hidden></div>
+  <div class="pbar" id="pBar">
+    <div class="seek-row">
+      <input type="range" id="pSeek" min="0" max="1000" step="1" value="0" aria-label="Positie in de film">
+    </div>
+    <div class="pbar-row">
+      <button class="pbtn" id="pPlay" aria-label="Afspelen of pauzeren">
+        <svg class="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></svg>
+        <svg class="i-pause" viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>
+      </button>
+      <button class="pbtn" id="pBack" aria-label="10 seconden terug"><svg viewBox="0 0 24 24"><path d="M12 5V2L7 6l5 4V7a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z"/><text x="12" y="16.5" font-size="7" text-anchor="middle" font-weight="700">10</text></svg></button>
+      <button class="pbtn" id="pFwd" aria-label="30 seconden vooruit"><svg viewBox="0 0 24 24"><path d="M12 5V2l5 4-5 4V7a6 6 0 1 0 6 6h2a8 8 0 1 1-8-8z"/><text x="12" y="16.5" font-size="7" text-anchor="middle" font-weight="700">30</text></svg></button>
+      <button class="pbtn" id="pMute" aria-label="Geluid aan of uit">
+        <svg class="i-vol" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4zM16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M4 9h4l5-4v14l-5-4H4z"/></svg>
+        <svg class="i-muted" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16 9l5 6M21 9l-5 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <input type="range" id="pVol" min="0" max="1" step="0.05" value="1" aria-label="Volume">
+      <span class="ptime" id="pTime">0:00 / 0:00</span>
+      <span class="grow"></span>
+      <button class="pbtn wide" id="pAudioBtn" aria-haspopup="true"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg><span>Audio</span></button>
+      <button class="pbtn wide" id="pSubBtn" aria-haspopup="true"><svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M6 15h5M13 15h5M6 11h3M11 11h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Ondertitels</span></button>
+      <button class="pbtn" id="pFull" aria-label="Volledig scherm"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></button>
+    </div>
+  </div>
+  <div class="pmenu" id="pMenu" hidden></div>
+  <input type="file" id="subFile" accept=".srt,.vtt,.ass,.ssa,text/vtt" hidden>
 </div>
 
 <script>
@@ -1196,7 +1267,102 @@ dd { margin: 0; font-weight: 700; }
   function closeDetail() { $('detail').hidden = true; detailCtx = null; }
 
   // ---------- speler voor films en series ----------
-  const vv = $('vodVideo');
+  // De browser kan geen AC3/DTS-geluid, geen andere audiosporen en geen ondertitels uit MKV-bestanden.
+  // Staat ffmpeg op de server, dan zet die de film om (/media/stream) en haalt hij de ondertitels eruit.
+  const vv = $('vodVideo'), playerEl = $('player');
+  let mediaCaps = { ffmpeg: false };
+  const SUB_SIZES = { S: 3.2, M: 4, L: 5.2, XL: 6.6 };
+  let prefs = Object.assign({ size: 'M', bg: false, audioLang: '', subLang: '' }, store.get('iptv.mediaPrefs', {}));
+  const savePrefs = () => store.set('iptv.mediaPrefs', prefs);
+  function applySubStyle() {
+    playerEl.style.setProperty('--sub-size', (SUB_SIZES[prefs.size] || 4) + 'vh');
+    $('subs').classList.toggle('bg', !!prefs.bg);
+  }
+  applySubStyle();
+  vv.volume = Math.min(1, Math.max(0, +store.get('iptv.volume', 1) || 0));
+  $('pVol').value = vv.volume;
+
+  // talen en sporen leesbaar maken
+  const LANG3 = { dut: 'nl', nld: 'nl', eng: 'en', ger: 'de', deu: 'de', fre: 'fr', fra: 'fr', spa: 'es', ita: 'it',
+    por: 'pt', tur: 'tr', ara: 'ar', pol: 'pl', rus: 'ru', swe: 'sv', dan: 'da', nor: 'no', nob: 'no', fin: 'fi',
+    jpn: 'ja', kor: 'ko', chi: 'zh', zho: 'zh', gre: 'el', ell: 'el', heb: 'he', hin: 'hi', hun: 'hu', cze: 'cs',
+    ces: 'cs', rum: 'ro', ron: 'ro', ukr: 'uk', vie: 'vi', tha: 'th', ind: 'id', bul: 'bg', hrv: 'hr', srp: 'sr',
+    slv: 'sl', slo: 'sk', slk: 'sk', ice: 'is', isl: 'is', lit: 'lt', lav: 'lv', est: 'et', per: 'fa', fas: 'fa' };
+  let langNames = null;
+  try { langNames = new Intl.DisplayNames(['nl'], { type: 'language' }); } catch {}
+  const langCode = l => { l = String(l || '').toLowerCase(); return LANG3[l] || (/^[a-z]{2}$/.test(l) ? l : ''); };
+  function langName(l) {
+    const c = langCode(l);
+    if (!c) return l && l !== 'und' ? String(l).toUpperCase() : '';
+    try { const n = langNames.of(c); return n.charAt(0).toUpperCase() + n.slice(1); } catch { return c.toUpperCase(); }
+  }
+  const CODECS = { ac3: 'Dolby Digital', eac3: 'Dolby Digital+', dts: 'DTS', truehd: 'Dolby TrueHD', aac: 'AAC',
+    mp3: 'MP3', mp2: 'MP2', opus: 'Opus', flac: 'FLAC', vorbis: 'Vorbis', subrip: 'SRT', ass: 'ASS', ssa: 'SSA',
+    mov_text: 'tekst', webvtt: 'WebVTT', hdmv_pgs_subtitle: 'PGS', dvd_subtitle: 'VobSub', dvb_subtitle: 'DVB' };
+  const channelName = n => ({ 1: 'mono', 2: 'stereo', 6: '5.1', 8: '7.1' }[n] || (n ? n + ' kanalen' : ''));
+  function trackLabel(t, i, kind) {
+    const name = langName(t.lang) || (kind === 'audio' ? 'Audiospoor ' : 'Ondertitel ') + (i + 1);
+    const extra = t.title && t.title.toLowerCase() !== name.toLowerCase() ? t.title : '';
+    const tech = kind === 'audio'
+      ? [CODECS[t.codec] || t.codec, channelName(t.channels)].filter(Boolean).join(' ')
+      : [t.forced ? 'geforceerd' : '', CODECS[t.codec] || t.codec].filter(Boolean).join(' · ');
+    return { name, sub: [extra, tech].filter(Boolean).join(' · ') };
+  }
+
+  // ondertitels lezen: SRT, WebVTT en ASS/SSA
+  const toSec = s => { const p = s.replace(',', '.').split(':').map(Number); return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1]; };
+  const decodeEntities = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+  function parseSubs(text) {
+    text = text.replace(/\r/g, '').replace(/^﻿/, '');
+    const cues = [];
+    if (/^\[Script Info\]/m.test(text)) {
+      for (const line of text.split('\n')) {
+        const m = line.match(/^Dialogue:\s*[^,]*,(\d+:\d{2}:\d{2}[.,]\d+),(\d+:\d{2}:\d{2}[.,]\d+),(?:[^,]*,){6}(.*)$/);
+        if (!m) continue;
+        const t = m[3].replace(/\{[^}]*\}/g, '').replace(/\\N/gi, '\n').trim();
+        if (t) cues.push({ start: toSec(m[1]), end: toSec(m[2]), text: t });
+      }
+    } else {
+      for (const block of text.split(/\n{2,}/)) {
+        const lines = block.split('\n');
+        const i = lines.findIndex(l => l.includes('-->'));
+        if (i < 0) continue;
+        const m = lines[i].match(/((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d+:)?\d{1,2}:\d{2}[.,]\d{1,3})/);
+        if (!m) continue;
+        const t = decodeEntities(lines.slice(i + 1).join('\n').replace(/<[^>]*>/g, '').replace(/\{\\[^}]*\}/g, '')).trim();
+        if (t) cues.push({ start: toSec(m[1]), end: toSec(m[2]), text: t });
+      }
+    }
+    return cues.sort((a, b) => a.start - b.start);
+  }
+
+  // tijd in de film; bij omzetten begint de stream op 'offset'
+  const absTime = () => vodCtx ? (vodCtx.mode === 'ffmpeg' ? vodCtx.offset : 0) + (vv.currentTime || 0) : 0;
+  const mediaDuration = () => !vodCtx ? 0
+    : vodCtx.mode === 'direct' && isFinite(vv.duration) && vv.duration > 0 ? vv.duration : vodCtx.duration || 0;
+  const newJobId = () => Array.from(crypto.getRandomValues(new Uint8Array(12)), b => b.toString(16).padStart(2, '0')).join('');
+
+  const canPlay = type => { try { return vv.canPlayType(type) !== ''; } catch { return false; } };
+  function videoCopyable(v) {
+    if (!v) return true;
+    if (v.codec === 'h264') return !v.pix_fmt || /^yuvj?420p$/.test(v.pix_fmt);
+    if (v.codec === 'hevc') return canPlay('video/mp4; codecs="hvc1.1.6.L120.90"');
+    if (v.codec === 'av1') return canPlay('video/mp4; codecs="av01.0.08M.08"');
+    if (v.codec === 'vp9') return canPlay('video/mp4; codecs="vp09.00.10.08"');
+    return false; // bijv. DivX/Xvid of MPEG-2 in oude films: beeld omzetten
+  }
+  function directPlayable(ctx) {
+    const i = ctx.info;
+    if (!/mp4|mov/.test(i.format || '')) return false;              // mkv, avi, ts … omzetten
+    if (i.video && !(i.video.codec === 'h264' && videoCopyable(i.video))) return false;
+    const a = i.audio[ctx.audio];
+    if (a && !['aac', 'mp3', 'opus', 'flac'].includes(a.codec)) return false; // AC3/DTS: geen geluid in de browser
+    if (ctx.audio > 0) return false;                                // ander spoor kiezen kan alleen ffmpeg
+    if (typeof ctx.subSel === 'number' && ctx.subSel >= 0) return false; // ondertitels uit de film: ffmpeg
+    return true;
+  }
+  const chooseMode = ctx => !mediaCaps.ffmpeg || !ctx.info || !ctx.info.available || directPlayable(ctx) ? 'direct' : 'ffmpeg';
+
   function pMsg(msg, err = false, detail = '', url = '') {
     const el = $('pMsg');
     el.hidden = !msg;
@@ -1205,47 +1371,307 @@ dd { margin: 0; font-weight: 700; }
       (url ? `<div class="actions" style="justify-content:center"><button class="btn" id="copyLink">Kopieer link voor VLC</button></div>` : '');
     if (url) $('copyLink').onclick = e => navigator.clipboard.writeText(url).then(() => { e.target.textContent = 'Gekopieerd'; }, () => { e.target.textContent = 'Kopiëren lukte niet'; });
   }
-  function playVod(ctx) {
-    vodCtx = ctx;
+
+  async function playVod(ctx) {
     if (curLive) resetLiveScreen(); // één verbinding tegelijk: live stopt
-    $('player').hidden = false;
-    $('pTitle').textContent = ctx.title;
-    playSources(vv, ctx.urls, {
-      live: false,
-      onStatus: m => pMsg(m),
-      onFail: errs => { const x = explain(errs); pMsg(`Dit speelt niet af. ${x.hint}`, true, x.detail, ctx.urls[0]); },
-    });
-  }
-  function closePlayer() {
     stopPlayback();
-    $('player').hidden = true;
+    closeMenu();
+    Object.assign(ctx, { mode: 'direct', offset: 0, info: null, audio: 0, subSel: -1, cues: [], fileName: '',
+      subDelay: 0, duration: 0, job: '', retried: false, triedFfmpeg: false, pendingSeek: 0 });
+    vodCtx = ctx;
+    playerEl.hidden = false;
+    $('pTitle').textContent = ctx.title;
+    $('subs').innerHTML = ''; subsShown = '';
+    updateTimeUi();
+    showUi();
+    pMsg('Laden…');
+    const r = resume[ctx.key];
+    const at = r && r[0] > 30 ? r[0] : 0;
+    if (mediaCaps.ffmpeg) {
+      try {
+        const res = await fetch('/media/probe?url=' + encodeURIComponent(ctx.urls[0]));
+        checkAuth(res);
+        if (res.ok) ctx.info = await res.json();
+      } catch {}
+      if (vodCtx !== ctx) return;
+    }
+    const info = ctx.info;
+    if (info && info.available) {
+      ctx.duration = info.duration || 0;
+      let ai = prefs.audioLang ? info.audio.findIndex(a => langCode(a.lang) === prefs.audioLang) : -1;
+      if (ai < 0) ai = Math.max(0, info.audio.findIndex(a => a.default));
+      ctx.audio = ai;
+      if (prefs.subLang) ctx.subSel = info.subs.findIndex(s => s.text && !s.forced && langCode(s.lang) === prefs.subLang);
+    }
+    ctx.mode = chooseMode(ctx);
+    startAt(ctx, at);
+  }
+
+  function startAt(ctx, t, auto = false) {
+    clearTimeout(ctx.subPoll);
+    if (!auto) ctx.retried = false;
+    if (ctx.subSel !== 'file') ctx.cues = [];
+    if (ctx.mode === 'direct') {
+      ctx.offset = 0;
+      ctx.pendingSeek = t;
+      playSources(vv, ctx.urls, {
+        live: false,
+        onStatus: m => pMsg(m),
+        onFail: errs => {
+          if (mediaCaps.ffmpeg && ctx.info && ctx.info.available && !ctx.triedFfmpeg) {
+            ctx.triedFfmpeg = true; ctx.mode = 'ffmpeg'; startAt(ctx, t, true); return; // dan maar omzetten
+          }
+          const x = explain(errs);
+          const hint = mediaCaps.ffmpeg ? x.hint : `${x.hint} Met ffmpeg op de server kan de app dit formaat omzetten.`;
+          pMsg(`Dit speelt niet af. ${hint}`, true, x.detail, ctx.urls[0]);
+        },
+      });
+      return;
+    }
+    stopPlayback();
+    eng.video = vv;
+    ctx.offset = t;
+    ctx.job = newJobId();
+    const v = ctx.info.video, copy = videoCopyable(v);
+    const q = new URLSearchParams({ url: ctx.urls[0], start: t.toFixed(1), job: ctx.job, v: copy ? 'copy' : 'x264' });
+    if (copy && v && v.codec === 'hevc') q.set('hevc', '1');
+    const a = ctx.info.audio[ctx.audio];
+    if (a) q.set('audio', a.index);
+    const s = typeof ctx.subSel === 'number' && ctx.subSel >= 0 ? ctx.info.subs[ctx.subSel] : null;
+    if (s && s.text) q.set('sub', s.index);
+    vv.src = '/media/stream?' + q;
+    vv.play().catch(() => {});
+    pMsg(copy ? 'Laden…' : 'Het beeld wordt omgezet naar een formaat dat je browser kan afspelen. Dit kan even duren…');
+    if (q.has('sub')) pollSubs(ctx, ctx.job, t);
+  }
+
+  // ffmpeg schrijft de ondertitels mee terwijl de film loopt; regelmatig ophalen
+  function pollSubs(ctx, job, base) {
+    const tick = async () => {
+      if (vodCtx !== ctx || ctx.job !== job) return;
+      try {
+        const r = await fetch('/media/subs?job=' + job);
+        if (r.ok && vodCtx === ctx && ctx.job === job && ctx.subSel !== 'file') {
+          ctx.cues = parseSubs(await r.text()).map(c => ({ start: c.start + base, end: c.end + base, text: c.text }));
+        }
+      } catch {}
+      if (vodCtx === ctx && ctx.job === job) ctx.subPoll = setTimeout(tick, 4000);
+    };
+    ctx.subPoll = setTimeout(tick, 1500);
+  }
+
+  let subsShown = '';
+  setInterval(() => {
+    const ctx = vodCtx;
+    let text = '';
+    if (ctx && ctx.subSel !== -1 && ctx.cues.length) {
+      const t = absTime() - ctx.subDelay;
+      text = ctx.cues.filter(c => c.start <= t && t < c.end).map(c => c.text).join('\n');
+    }
+    if (text !== subsShown) {
+      subsShown = text;
+      $('subs').innerHTML = text ? text.split('\n').map(l => `<span>${esc(l)}</span>`).join('<br>') : '';
+    }
+  }, 150);
+
+  function seekTo(t) {
+    const ctx = vodCtx;
+    if (!ctx) return;
+    const d = mediaDuration();
+    t = Math.max(0, d ? Math.min(t, d - 2) : t);
+    if (ctx.mode === 'direct') { vv.currentTime = t; return; }
+    const rel = t - ctx.offset, sk = vv.seekable;
+    for (let i = 0; i < sk.length; i++) if (rel >= sk.start(i) && rel <= sk.end(i)) { vv.currentTime = rel; return; }
+    startAt(ctx, t); // buiten wat al binnen is: de stream opnieuw starten vanaf dat punt
+  }
+
+  function closePlayer() {
+    if (vodCtx) clearTimeout(vodCtx.subPoll);
+    stopPlayback();
+    closeMenu();
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    playerEl.hidden = true;
+    playerEl.classList.remove('playing');
     vodCtx = null;
+    $('subs').innerHTML = ''; subsShown = '';
     if (detailCtx) { updateDetailButtons(); if (detailCtx.seasons) renderSeasons(); }
   }
-  let lastSave = 0, fadeTimer = 0;
-  vv.addEventListener('playing', () => { pMsg(''); });
+
+  // ----- bediening -----
+  let seeking = false, lastSave = 0, uiTimer = 0;
+  function updateTimeUi() {
+    const d = mediaDuration(), t = absTime();
+    $('pTime').textContent = `${clock(t)} / ${d ? clock(d) : '--:--'}`;
+    if (!seeking) $('pSeek').value = d ? Math.round(t / d * 1000) : 0;
+  }
+  function showUi() {
+    playerEl.classList.remove('idle');
+    clearTimeout(uiTimer);
+    uiTimer = setTimeout(() => { if (!vv.paused && $('pMenu').hidden) playerEl.classList.add('idle'); }, 3000);
+  }
+  ['mousemove', 'touchstart'].forEach(ev => playerEl.addEventListener(ev, showUi, { passive: true }));
+  const togglePlay = () => { if (vodCtx) vv.paused ? vv.play().catch(() => {}) : vv.pause(); };
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    else if (playerEl.requestFullscreen) playerEl.requestFullscreen().catch(() => {});
+    else if (vv.webkitEnterFullscreen) vv.webkitEnterFullscreen();
+  }
+
+  $('pSeek').addEventListener('input', () => {
+    seeking = true;
+    const d = mediaDuration();
+    if (d) $('pTime').textContent = `${clock($('pSeek').value / 1000 * d)} / ${clock(d)}`;
+    showUi();
+  });
+  $('pSeek').addEventListener('change', () => {
+    seeking = false;
+    const d = mediaDuration();
+    if (d) seekTo($('pSeek').value / 1000 * d);
+  });
+  $('pPlay').onclick = togglePlay;
+  $('pBack').onclick = () => seekTo(absTime() - 10);
+  $('pFwd').onclick = () => seekTo(absTime() + 30);
+  $('pMute').onclick = () => { vv.muted = !vv.muted; };
+  $('pVol').addEventListener('input', e => { vv.volume = +e.target.value; vv.muted = vv.volume === 0; });
+  $('pFull').onclick = toggleFullscreen;
+  $('pAudioBtn').onclick = () => openMenu('audio');
+  $('pSubBtn').onclick = () => openMenu('subs');
+  vv.addEventListener('click', () => { if (!$('pMenu').hidden) closeMenu(); else togglePlay(); });
+  vv.addEventListener('dblclick', toggleFullscreen);
+
+  vv.addEventListener('play', () => { playerEl.classList.add('playing'); showUi(); });
+  vv.addEventListener('pause', () => { playerEl.classList.remove('playing'); showUi(); });
+  vv.addEventListener('volumechange', () => {
+    playerEl.classList.toggle('muted', vv.muted || vv.volume === 0);
+    $('pVol').value = vv.muted ? 0 : vv.volume;
+    store.set('iptv.volume', vv.volume);
+  });
+  vv.addEventListener('playing', () => pMsg(''));
   vv.addEventListener('waiting', () => { if (vodCtx) pMsg('Bufferen…'); });
   vv.addEventListener('loadedmetadata', () => {
-    const r = vodCtx && resume[vodCtx.key];
-    if (r && isFinite(vv.duration) && r[0] > 30 && r[0] < vv.duration - 30) vv.currentTime = r[0];
+    const ctx = vodCtx;
+    if (ctx && ctx.mode === 'direct' && ctx.pendingSeek && isFinite(vv.duration) && ctx.pendingSeek < vv.duration - 30) vv.currentTime = ctx.pendingSeek;
+    if (ctx) ctx.pendingSeek = 0;
+    updateTimeUi();
   });
   vv.addEventListener('timeupdate', () => {
-    if (!vodCtx || !isFinite(vv.duration) || Date.now() - lastSave < 5000) return;
+    updateTimeUi();
+    const ctx = vodCtx, d = mediaDuration();
+    if (!ctx || !d || Date.now() - lastSave < 5000) return;
     lastSave = Date.now();
-    const t = vv.currentTime, d = vv.duration;
+    const t = absTime();
     if (t < 30) return;
-    if (t > d * 0.95) delete resume[vodCtx.key]; else resume[vodCtx.key] = [Math.floor(t), Math.floor(d)];
+    if (t > d * 0.95) delete resume[ctx.key]; else resume[ctx.key] = [Math.floor(t), Math.floor(d)];
     store.set('iptv.resume', resume);
   });
   vv.addEventListener('ended', () => {
-    if (!vodCtx) return;
-    delete resume[vodCtx.key]; store.set('iptv.resume', resume);
-    if (vodCtx.next) vodCtx.next();
+    const ctx = vodCtx;
+    if (!ctx) return;
+    const d = mediaDuration();
+    if (ctx.mode === 'ffmpeg' && d && absTime() < d - 60 && !ctx.retried) { // verbinding weggevallen
+      ctx.retried = true;
+      pMsg('Verbinding weggevallen, opnieuw verbinden…');
+      startAt(ctx, absTime(), true);
+      return;
+    }
+    delete resume[ctx.key]; store.set('iptv.resume', resume);
+    if (ctx.next) ctx.next();
   });
-  $('player').addEventListener('mousemove', () => {
-    $('playerTop').classList.remove('fade');
-    clearTimeout(fadeTimer);
-    fadeTimer = setTimeout(() => $('playerTop').classList.add('fade'), 2500);
+  // Omzetten mislukt? Laat zien wat ffmpeg zei.
+  vv.addEventListener('error', async () => {
+    const ctx = vodCtx;
+    if (!ctx || ctx.mode !== 'ffmpeg' || !vv.getAttribute('src')) return;
+    const job = ctx.job;
+    let detail = '';
+    try { const r = await fetch('/media/log?job=' + job); if (r.ok) detail = (await r.text()).trim().split('\n').slice(-2).join(' '); } catch {}
+    if (vodCtx !== ctx || ctx.job !== job) return;
+    pMsg('Het omzetten van deze film is mislukt.', true, detail, ctx.urls[0]);
+  });
+
+  // ----- menu's voor audio en ondertitels -----
+  function closeMenu() {
+    $('pMenu').hidden = true;
+    $('pAudioBtn').setAttribute('aria-expanded', 'false');
+    $('pSubBtn').setAttribute('aria-expanded', 'false');
+  }
+  function openMenu(kind) {
+    const m = $('pMenu');
+    if (!m.hidden && m.dataset.kind === kind) return closeMenu();
+    m.dataset.kind = kind;
+    renderMenu();
+    m.hidden = false;
+    $('pAudioBtn').setAttribute('aria-expanded', kind === 'audio');
+    $('pSubBtn').setAttribute('aria-expanded', kind === 'subs');
+    showUi();
+  }
+  const opt = (attrs, on, name, sub = '', disabled = false) =>
+    `<button class="opt" ${attrs}${disabled ? ' disabled' : ''}><span class="ck">${on ? '✓' : ''}</span><span>${esc(name)}${sub ? `<small>${esc(sub)}</small>` : ''}</span></button>`;
+  function renderMenu() {
+    const m = $('pMenu'), ctx = vodCtx;
+    if (!ctx) return;
+    const info = ctx.info && ctx.info.available ? ctx.info : null;
+    const noTools = mediaCaps.ffmpeg ? '' : '<p class="note">Andere audiosporen kiezen, ondertitels uit de film halen en oude geluidsformaten (AC3, DTS) afspelen kan alleen als <b>ffmpeg</b> op de server staat.</p>';
+    let html;
+    if (m.dataset.kind === 'audio') {
+      html = '<h4>Audio</h4>';
+      if (info && info.audio.length) html += info.audio.map((a, i) => { const l = trackLabel(a, i, 'audio'); return opt(`data-audio="${i}"`, i === ctx.audio, l.name, l.sub); }).join('');
+      else html += noTools || '<p class="note">Geen informatie over de audiosporen van deze film.</p>';
+    } else {
+      html = '<h4>Ondertitels</h4>' + opt('data-sub="-1"', ctx.subSel === -1, 'Uit');
+      if (info) {
+        html += info.subs.map((s, i) => {
+          const l = trackLabel(s, i, 'sub');
+          return opt(`data-sub="${i}"`, ctx.subSel === i, l.name, s.text ? l.sub : 'Beeldondertitels: kan de app niet tonen', !s.text);
+        }).join('');
+        if (!info.subs.length) html += '<p class="note">Deze film heeft geen ingebouwde ondertitels.</p>';
+      } else html += noTools;
+      html += opt('data-subfile', ctx.subSel === 'file', ctx.fileName ? `Eigen bestand: ${ctx.fileName}` : 'Bestand van je computer…', '.srt, .vtt of .ass');
+      html += '<h4>Grootte</h4><div class="seg-row">' + Object.keys(SUB_SIZES).map(k => `<button class="chipb" data-size="${k}" aria-pressed="${prefs.size === k}">${k}</button>`).join('') + '</div>';
+      html += `<h4>Stijl</h4><div class="seg-row"><button class="chipb" data-bg="0" aria-pressed="${!prefs.bg}">Schaduw</button><button class="chipb" data-bg="1" aria-pressed="${!!prefs.bg}">Zwart vlak</button></div>`;
+      const d = ctx.subDelay;
+      html += `<h4>Timing</h4><div class="seg-row"><button class="chipb" data-delay="-0.5">Eerder</button><span class="delay">${(d > 0 ? '+' : '') + d.toFixed(1).replace('.', ',')} s</span><button class="chipb" data-delay="0.5">Later</button><button class="chipb" data-delay="0">Reset</button></div>`;
+    }
+    m.innerHTML = html;
+  }
+  $('pMenu').addEventListener('click', e => {
+    const b = e.target.closest('button'), ctx = vodCtx;
+    if (!b || b.disabled || !ctx) return;
+    if (b.dataset.audio !== undefined) {
+      const i = +b.dataset.audio;
+      if (i !== ctx.audio) {
+        ctx.audio = i;
+        prefs.audioLang = langCode(ctx.info.audio[i].lang); savePrefs();
+        ctx.mode = chooseMode(ctx);
+        startAt(ctx, absTime());
+      }
+      return closeMenu();
+    }
+    if (b.dataset.sub !== undefined) {
+      const i = +b.dataset.sub, prev = ctx.subSel;
+      ctx.subSel = i;
+      prefs.subLang = i >= 0 ? langCode(ctx.info.subs[i].lang) : ''; savePrefs();
+      if (i === -1) { clearTimeout(ctx.subPoll); ctx.cues = []; }
+      else if (i !== prev) { ctx.mode = chooseMode(ctx); startAt(ctx, absTime()); }
+      return closeMenu();
+    }
+    if (b.dataset.subfile !== undefined) return $('subFile').click();
+    if (b.dataset.size) { prefs.size = b.dataset.size; savePrefs(); applySubStyle(); }
+    if (b.dataset.bg) { prefs.bg = b.dataset.bg === '1'; savePrefs(); applySubStyle(); }
+    if (b.dataset.delay) { const d = +b.dataset.delay; ctx.subDelay = d === 0 ? 0 : Math.round((ctx.subDelay + d) * 10) / 10; }
+    renderMenu();
+  });
+  $('subFile').addEventListener('change', async e => {
+    const f = e.target.files[0], ctx = vodCtx;
+    e.target.value = '';
+    if (!f || !ctx) return;
+    const buf = await f.arrayBuffer();
+    let text = new TextDecoder('utf-8').decode(buf);
+    if (text.includes('�')) text = new TextDecoder('windows-1252').decode(buf); // oude .srt-bestanden
+    const cues = parseSubs(text);
+    if (!cues.length) { pMsg('In dit bestand zijn geen ondertitels gevonden.', true); setTimeout(() => pMsg(''), 3000); return; }
+    clearTimeout(ctx.subPoll);
+    Object.assign(ctx, { subSel: 'file', fileName: f.name, cues });
+    closeMenu();
   });
 
   // ---------- instellingen ----------
@@ -1321,7 +1747,22 @@ dd { margin: 0; font-weight: 700; }
 
   document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {
-      if (!$('player').hidden) closePlayer(); else if (!$('detail').hidden) closeDetail();
+      if (!$('pMenu').hidden) closeMenu();
+      else if (!$('player').hidden) closePlayer();
+      else if (!$('detail').hidden) closeDetail();
+      return;
+    }
+    if (!$('player').hidden) {
+      if (/^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
+      const k = e.key.toLowerCase();
+      if (k === ' ' || k === 'k') { e.preventDefault(); togglePlay(); }
+      else if (k === 'arrowleft') { e.preventDefault(); seekTo(absTime() - 10); }
+      else if (k === 'arrowright') { e.preventDefault(); seekTo(absTime() + 10); }
+      else if (k === 'f') toggleFullscreen();
+      else if (k === 'm') vv.muted = !vv.muted;
+      else if (k === 'c') openMenu('subs');
+      else return;
+      showUi();
       return;
     }
     if (currentView !== 'live' || !$('player').hidden || /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
@@ -1368,7 +1809,14 @@ dd { margin: 0; font-weight: 700; }
   });
 
   // instellingen
-  fetch('/session').then(r => r.ok ? r.json() : null).then(s => { if (s && s.auth) $('siteCard').hidden = false; }).catch(() => {});
+  fetch('/session').then(r => r.ok ? r.json() : null).then(s => {
+    if (!s) return;
+    if (s.auth) $('siteCard').hidden = false;
+    mediaCaps.ffmpeg = !!s.ffmpeg;
+    $('ffInfo').innerHTML = s.ffmpeg
+      ? 'ffmpeg staat op de server: films met oude geluidsformaten spelen met geluid af, en je kunt audiosporen en ingebouwde ondertitels kiezen.'
+      : 'ffmpeg staat nog niet op de server. Zonder ffmpeg hebben sommige (oudere) films geen geluid en kun je geen audiospoor of ingebouwde ondertitels kiezen. Installeer het met <b>sudo apt install ffmpeg</b>; daarna werkt het meteen.';
+  }).catch(() => {});
   $('siteLogout').addEventListener('click', async () => {
     stopPlayback();
     try { await fetch('/logout', { method: 'POST' }); } catch {}
