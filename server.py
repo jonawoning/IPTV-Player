@@ -19,6 +19,8 @@ De server:
   - weigert verzoeken naar interne of privé-adressen, zodat de proxy niet misbruikt kan worden
 Hij luistert alleen op 127.0.0.1; van buitenaf kom je er alleen via een webserver zoals nginx.
 """
+import atexit
+import collections
 import getpass
 import hashlib
 import hmac
@@ -29,8 +31,11 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -47,6 +52,36 @@ CHUNK = 64 * 1024
 
 PLAYLIST_TIMEOUT = 180  # grote playlists worden door de provider ter plekke gemaakt
 STREAM_TIMEOUT = 45
+
+# ---------- films: omzetten met ffmpeg (audio, ondertitels, oude formaten) ----------
+# ffmpeg haalt de film zelf via onze eigen /proxy op, met een geheime sleutel. Zo gelden
+# dezelfde beveiligingsregels (geen interne adressen) en werkt het met elke provider.
+INTERNAL_TOKEN = secrets.token_urlsafe(32)
+SERVER_PORT = PORT
+MEDIA_DIR = tempfile.mkdtemp(prefix="iptv-media-")
+atexit.register(shutil.rmtree, MEDIA_DIR, True)
+TEXT_SUBS = {"subrip", "srt", "ass", "ssa", "mov_text", "webvtt", "text"}
+MAX_JOBS = 3
+JOB_RE = re.compile(r"^[A-Za-z0-9_-]{8,40}$")
+_jobs_lock = threading.Lock()
+_jobs = {}        # eigenaar (sessie) -> {"id": job-id, "proc": Popen}
+_job_owner = {}   # job-id -> eigenaar
+_job_logs = {}    # job-id -> laatste regels van ffmpeg
+_internal_streams = {}  # url -> open verbinding met de provider (voor ffmpeg)
+
+
+def media_tools():
+    """Pas bij gebruik zoeken: installeer je ffmpeg later, dan werkt het meteen."""
+    return shutil.which("ffmpeg"), shutil.which("ffprobe")
+
+
+def internal_url(url):
+    return f"http://127.0.0.1:{SERVER_PORT}/proxy?url=" + urllib.parse.quote(url, safe="")
+
+
+def internal_headers():
+    return f"X-IPTV-Internal: {INTERNAL_TOKEN}\r\n"
+
 
 # Namen waarmee de app zich bij de provider meldt. Werkt de eerste niet (fout 401/403/5xx),
 # dan wordt de volgende geprobeerd. De eerste die werkt wordt onthouden.
@@ -149,6 +184,16 @@ def safe_content_type(ctype):
 
 
 def open_upstream(url, timeout, range_header=None):
+    """Open de URL; weigert de provider omdat er nog een verbinding openstaat (bijv. na het
+    doorspoelen), dan na even wachten nog één keer proberen."""
+    resp, err = _open_upstream(url, timeout, range_header)
+    if err and err[0] in (403, 429, 458, 509, 884):
+        time.sleep(1.5)
+        resp, err = _open_upstream(url, timeout, range_header)
+    return resp, err
+
+
+def _open_upstream(url, timeout, range_header=None):
     """Open de URL en probeer zo nodig andere app-namen. Geeft (resp, None) of (None, (code, melding))."""
     host = urllib.parse.urlparse(url).netloc
     uas = USER_AGENTS[:]
@@ -326,7 +371,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
-        self.send_header("Referrer-Policy", "no-referrer")
+        # same-origin: binnen de site werkt alles normaal, naar andere sites lekt geen URL (met inloggegevens)
+        self.send_header("Referrer-Policy", "same-origin")
         self.send_header("X-Robots-Tag", "noindex, nofollow")
         self.send_header("Content-Security-Policy", getattr(self, "csp", PROXY_CSP))
         if self.is_https():
@@ -363,17 +409,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
         m = c.get(SESSION_COOKIE)
         return m.value if m else None
 
+    def is_internal(self):
+        """Verzoek van onze eigen ffmpeg (via 127.0.0.1, met de geheime sleutel van deze server)."""
+        tok = self.headers.get("X-IPTV-Internal")
+        return (bool(tok) and self.from_local_proxy() and not self.headers.get("X-Real-IP")
+                and hmac.compare_digest(tok, INTERNAL_TOKEN))
+
     def authed(self):
-        return not AUTH_ENABLED or session_valid(self.session_token())
+        return not AUTH_ENABLED or self.is_internal() or session_valid(self.session_token())
+
+    def owner(self):
+        token = self.session_token()
+        return _digest(token) if token else "local"
 
     def cookie(self, value, max_age):
         return (f"{SESSION_COOKIE}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}"
                 + ("; Secure" if self.is_https() else ""))
 
     def same_origin(self):
+        # Moderne browsers zeggen zelf waar een verzoek vandaan komt; een pagina kan dat niet vervalsen.
+        site = self.headers.get("Sec-Fetch-Site")
+        if site:
+            return site in ("same-origin", "none")
         origin = self.headers.get("Origin")
         if not origin:
             return True  # oudere browsers sturen geen Origin; SameSite-cookie beschermt dan
+        if origin == "null":
+            return False
         return urllib.parse.urlparse(origin).netloc.lower() == (self.headers.get("Host") or "").lower()
 
     def send_body(self, code, body, ctype, csp=PROXY_CSP, extra=()):
@@ -422,9 +484,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 return self.send_text_error(500, "index.html ontbreekt")
             return self.send_body(200, body, "text/html; charset=utf-8", csp=PAGE_CSP)
         if path == "/session":
-            return self.send_body(200, json.dumps({"auth": AUTH_ENABLED}).encode(), "application/json")
+            ffmpeg, ffprobe = media_tools()
+            info = {"auth": AUTH_ENABLED, "ffmpeg": bool(ffmpeg and ffprobe)}
+            return self.send_body(200, json.dumps(info).encode(), "application/json")
         if path == "/proxy":
             return self.handle_proxy(urllib.parse.urlparse(self.path))
+        if path.startswith("/media/"):
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            routes = {"/media/probe": self.handle_probe, "/media/stream": self.handle_media_stream,
+                      "/media/subs": self.handle_media_subs, "/media/log": self.handle_media_log}
+            if path in routes:
+                return routes[path](qs)
         return self.send_text_error(404, "Niet gevonden")  # verder niets: geen bestanden uit de map
 
     def do_POST(self):
@@ -463,6 +533,192 @@ class Handler(http.server.BaseHTTPRequestHandler):
         time.sleep(1)
         return self.send_login(401, "Onjuist wachtwoord.")
 
+    # ----- films: analyseren en omzetten met ffmpeg -----
+    def media_url_param(self, qs):
+        url = qs.get("url", [None])[0]
+        if not url or not url.lower().startswith(("http://", "https://")):
+            self.send_text_error(400, "Ongeldige URL")
+            return None
+        return url
+
+    def handle_probe(self, qs):
+        """Welke audiosporen en ondertitels zitten er in de film?"""
+        _, ffprobe = media_tools()
+        if not ffprobe:
+            return self.send_body(200, b'{"available": false}', "application/json")
+        url = self.media_url_param(qs)
+        if not url:
+            return
+        cmd = [ffprobe, "-v", "error", "-protocol_whitelist", "http,tcp", "-headers", internal_headers(),
+               "-print_format", "json", "-show_format", "-show_streams", internal_url(url)]
+        try:
+            out = subprocess.run(cmd, capture_output=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return self.send_text_error(504, "Het analyseren van de film duurde te lang")
+        if out.returncode != 0:
+            err = out.stderr.decode("utf-8", "replace").strip().splitlines()[-1:] or ["onbekende fout"]
+            print(f"[film] analyseren mislukt: {mask(err[0])}")
+            return self.send_text_error(502, "Kan de film niet analyseren: " + mask(err[0]))
+        try:
+            data = json.loads(out.stdout.decode("utf-8", "replace"))
+        except ValueError:
+            return self.send_text_error(502, "Onverwacht antwoord van ffprobe")
+
+        def tags(st):
+            t = st.get("tags") or {}
+            return (t.get("language") or t.get("LANGUAGE") or "").lower(), t.get("title") or t.get("TITLE") or ""
+
+        video, audio, subs = None, [], []
+        for st in data.get("streams", []):
+            kind, disp = st.get("codec_type"), st.get("disposition") or {}
+            lang, title = tags(st)
+            if kind == "video" and video is None and not disp.get("attached_pic"):
+                video = {"index": st.get("index"), "codec": st.get("codec_name"), "pix_fmt": st.get("pix_fmt"),
+                         "width": st.get("width"), "height": st.get("height")}
+            elif kind == "audio":
+                audio.append({"index": st.get("index"), "codec": st.get("codec_name"), "channels": st.get("channels"),
+                              "lang": lang, "title": title, "default": bool(disp.get("default"))})
+            elif kind == "subtitle":
+                subs.append({"index": st.get("index"), "codec": st.get("codec_name"), "lang": lang, "title": title,
+                             "default": bool(disp.get("default")), "forced": bool(disp.get("forced")),
+                             "text": st.get("codec_name") in TEXT_SUBS})
+        fmt = data.get("format") or {}
+        try:
+            duration = float(fmt.get("duration") or 0)
+        except ValueError:
+            duration = 0
+        info = {"available": True, "format": fmt.get("format_name", ""), "duration": duration,
+                "video": video, "audio": audio, "subs": subs}
+        return self.send_body(200, json.dumps(info).encode(), "application/json")
+
+    def stop_job(self, owner):
+        with _jobs_lock:
+            job = _jobs.pop(owner, None)
+        if job and job["proc"].poll() is None:
+            job["proc"].kill()
+            try:
+                job["proc"].wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return True
+        return False
+
+    def handle_media_stream(self, qs):
+        """Film omzetten naar iets wat elke browser kan: MP4 met AAC-geluid (en zo nodig H.264-beeld),
+        met het gekozen audiospoor, vanaf een bepaald moment. Ondertitels gaan naar een apart bestand."""
+        ffmpeg, _ = media_tools()
+        if not ffmpeg:
+            return self.send_text_error(501, "ffmpeg is niet geïnstalleerd op de server")
+        url = self.media_url_param(qs)
+        if not url:
+            return
+
+        def num(name, default, cast=int):
+            try:
+                return cast(qs.get(name, [default])[0])
+            except (TypeError, ValueError):
+                return default
+        start = max(0.0, num("start", 0.0, float))
+        audio, sub = num("audio", -1), num("sub", -1)
+        job = qs.get("job", [""])[0]
+        if not JOB_RE.match(job):
+            return self.send_text_error(400, "Ongeldige opdracht")
+        copy_video = qs.get("v", [""])[0] == "copy"
+
+        owner = self.owner()
+        if self.stop_job(owner):
+            time.sleep(1)  # provider de tijd geven de vorige verbinding te sluiten
+        with _jobs_lock:
+            if sum(1 for j in _jobs.values() if j["proc"].poll() is None) >= MAX_JOBS:
+                return self.send_text_error(503, "Te veel films tegelijk aan het omzetten")
+
+        cmd = [ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin",
+               "-protocol_whitelist", "http,tcp", "-headers", internal_headers()]
+        if start > 0:
+            cmd += ["-ss", f"{start:.2f}"]
+        cmd += ["-i", internal_url(url), "-map", "0:v:0?", "-map", f"0:{audio}" if audio >= 0 else "0:a:0?"]
+        if copy_video:
+            cmd += ["-c:v", "copy"] + (["-tag:v", "hvc1"] if qs.get("hevc", [""])[0] == "1" else [])
+        else:
+            cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
+                    "-vf", "scale=w='min(1920,iw)':h=-2"]
+        cmd += ["-c:a", "aac", "-ac", "2", "-b:a", "192k", "-sn", "-dn",
+                "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "pipe:1"]
+        vtt = os.path.join(MEDIA_DIR, job + ".vtt")
+        if sub >= 0:
+            cmd += ["-map", f"0:{sub}", "-c:s", "webvtt", "-f", "webvtt", "-flush_packets", "1", "-y", vtt]
+
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        log = collections.deque(maxlen=20)
+        with _jobs_lock:
+            _jobs[owner] = {"id": job, "proc": proc}
+            _job_owner[job] = owner
+            _job_logs[job] = log
+            while len(_job_logs) > 50:  # oude logboeken opruimen
+                old = next(iter(_job_logs))
+                _job_logs.pop(old, None)
+                _job_owner.pop(old, None)
+
+        def collect():
+            for line in proc.stderr:
+                log.append(mask(line.decode("utf-8", "replace").rstrip()))
+        threading.Thread(target=collect, daemon=True).start()
+
+        try:
+            first = proc.stdout.read1(CHUNK)
+            if not first:
+                proc.wait(timeout=5)
+                time.sleep(0.2)
+                msg = log[-1] if log else "onbekende fout"
+                print(f"[film] omzetten mislukt: {msg}")
+                return self.send_text_error(502, "Omzetten mislukt: " + msg)
+            self.csp = PROXY_CSP
+            self.send_response(200)
+            self.send_header("Content-Type", "video/mp4")
+            self.end_headers()
+            try:
+                self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            self.wfile.write(first)
+            while True:
+                chunk = proc.stdout.read1(CHUNK)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass  # gestopt, doorgespoeld of ander spoor gekozen
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            with _jobs_lock:
+                if _jobs.get(owner, {}).get("proc") is proc:
+                    _jobs.pop(owner, None)
+
+    def own_job(self, qs):
+        job = qs.get("job", [""])[0]
+        if not JOB_RE.match(job) or _job_owner.get(job) != self.owner():
+            self.send_text_error(404, "Onbekende opdracht")
+            return None
+        return job
+
+    def handle_media_subs(self, qs):
+        """De ondertitels die ffmpeg tot nu toe uit de film heeft gehaald."""
+        job = self.own_job(qs)
+        if not job:
+            return
+        try:
+            with open(os.path.join(MEDIA_DIR, job + ".vtt"), "rb") as f:
+                body = f.read()
+        except OSError:
+            body = b"WEBVTT\n\n"
+        self.send_body(200, body, "text/vtt; charset=utf-8")
+
+    def handle_media_log(self, qs):
+        job = self.own_job(qs)
+        if job:
+            self.send_body(200, "\n".join(_job_logs.get(job, [])).encode("utf-8"), "text/plain; charset=utf-8")
+
     def handle_proxy(self, parsed):
         qs = urllib.parse.parse_qs(parsed.query)
         url = qs.get("url", [None])[0]
@@ -472,10 +728,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         timeout = PLAYLIST_TIMEOUT if is_list_request else STREAM_TIMEOUT
         started = time.time()
+        internal = self.is_internal()
+        if internal:  # ffmpeg spoelt door: oude verbinding naar deze film eerst dicht
+            with _jobs_lock:
+                prev = _internal_streams.pop(url, None)
+            if prev:
+                try:
+                    prev.close()
+                except Exception:
+                    pass
         resp, err = open_upstream(url, timeout, self.headers.get("Range"))
         if err:
             print(f"[fout] {err[1]}  ({mask(url)})")
             return self.send_text_error(err[0], err[1])
+        if internal:
+            with _jobs_lock:
+                _internal_streams[url] = resp
 
         final_url = resp.geturl()
         ctype = resp.headers.get("Content-Type", "") or ""
@@ -511,7 +779,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     if not chunk:
                         break
                     self.wfile.write(chunk)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass  # speler gestopt of zender gewisseld
         except (TimeoutError, socket.timeout):
             print(f"[fout] Provider stopte met sturen  ({mask(url)})")
@@ -537,7 +805,8 @@ def set_password():
     except OSError:
         pass
     print(f"Opgeslagen in {AUTH_FILE} (alleen een versleutelde hash, niet het wachtwoord zelf).")
-    print("Herstart de server. Iedereen die nu is ingelogd, moet opnieuw inloggen.")
+    print("Draait de server als daemon, dan herstart hij binnen een paar seconden vanzelf. Anders: herstart hem zelf.")
+    print("Iedereen die nu is ingelogd, moet opnieuw inloggen.")
 
 
 # ---------- testmodus ----------
@@ -590,6 +859,46 @@ def run_test(url):
     print("en sluit die andere app even: veel abonnementen staan maar één verbinding tegelijk toe.")
 
 
+# ---------- automatisch herstarten na een deploy ----------
+WATCH_FILES = [os.path.abspath(__file__), AUTH_FILE]
+
+
+def _mtimes(files):
+    out = {}
+    for f in files:
+        try:
+            out[f] = os.stat(f).st_mtime_ns
+        except OSError:
+            out[f] = None
+    return out
+
+
+def watch_for_updates(files=None, interval=2.0, restart=None):
+    """Nieuwe server.py (na git pull) of een nieuw wachtwoord? Dan herstart de server zichzelf,
+    in hetzelfde proces, zodat de daemon (supervisor) gewoon blijft lopen."""
+    files = files or WATCH_FILES
+    restart = restart or (lambda: os.execv(sys.executable, getattr(sys, "orig_argv", [sys.executable] + sys.argv)))
+    last = _mtimes(files)
+    while True:
+        time.sleep(interval)
+        now = _mtimes(files)
+        if now == last:
+            continue
+        time.sleep(1)  # git kan nog aan het schrijven zijn
+        if _mtimes(files) != now:
+            continue   # nog niet klaar; de volgende ronde opnieuw kijken
+        try:
+            with open(files[0], encoding="utf-8") as f:
+                compile(f.read(), files[0], "exec")
+        except (SyntaxError, ValueError, OSError) as e:
+            print(f"[update] De nieuwe server.py bevat een fout; de oude versie blijft draaien. ({e})", flush=True)
+            last = now
+            continue
+        print("[update] Nieuwe versie of nieuw wachtwoord gevonden, server herstart…", flush=True)
+        restart()
+        return
+
+
 def main():
     if "--set-password" in sys.argv:
         return set_password()
@@ -602,11 +911,31 @@ def main():
         print("Geen wachtwoord ingesteld. Voer eerst uit:  python3 server.py --set-password")
         sys.exit(1)
 
-    server = http.server.ThreadingHTTPServer((HOST, PORT), Handler)
+    port = PORT
+    if "--port" in sys.argv:
+        i = sys.argv.index("--port")
+        try:
+            port = int(sys.argv[i + 1])
+        except (IndexError, ValueError):
+            print("Gebruik: python server.py --port 8010"); sys.exit(1)
+
+    global SERVER_PORT
+    SERVER_PORT = port
+    try:
+        server = http.server.ThreadingHTTPServer((HOST, port), Handler)
+    except OSError:
+        print(f"Poort {port} is al in gebruik door een ander programma. Kies een andere, bijvoorbeeld:  --port 8010")
+        sys.exit(1)
     server.daemon_threads = True
-    url = f"http://localhost:{PORT}"
+    url = f"http://localhost:{port}"
     print(f"Mijn IPTV draait op {url}  (stoppen: Ctrl+C)")
     print("Inloggen met wachtwoord: " + ("aan" if AUTH_ENABLED else "uit (alleen bereikbaar vanaf deze computer)"))
+    print("Films omzetten met ffmpeg (audio, ondertitels, oude formaten): "
+          + ("aan" if all(media_tools()) else "uit (installeer ffmpeg, bijvoorbeeld: sudo apt install ffmpeg)"))
+    # Alleen op Linux/macOS: daar vervangt de herstart het proces netjes, zodat de daemon niets merkt.
+    if os.name == "posix" and "--no-reload" not in sys.argv:
+        threading.Thread(target=watch_for_updates, daemon=True).start()
+        print("Automatisch herstarten na een deploy of nieuw wachtwoord: aan")
     if "--no-browser" not in sys.argv:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
     try:
