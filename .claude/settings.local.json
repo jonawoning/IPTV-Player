@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -)",
+      "Bash(node --check \"C:/Users/jonaw/AppData/Local/Temp/claude/c--Users-jonaw-Desktop-Mijn-bestanden-GitHub-Projects-IPTV-Player/4aa0a8df-f596-413f-84ab-177947edf75d/scratchpad/app.js\")"
+    ]
+  }
+}
