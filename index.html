@@ -388,6 +388,11 @@ dd { margin: 0; font-weight: 700; }
             <button class="btn" id="logoutBtn">Andere playlist / uitloggen</button>
           </div>
         </div>
+        <div class="card" id="siteCard" hidden>
+          <h3>Deze website</h3>
+          <p>Meld je af op dit apparaat. Je moet daarna opnieuw het wachtwoord van de server invullen.</p>
+          <div class="actions"><button class="btn" id="siteLogout">Afmelden</button></div>
+        </div>
         <div class="card">
           <h3>Live TV: buffer</h3>
           <p>Hoeveel seconden de zender achter mag lopen. Meer seconden betekent minder haperen, maar je ziet alles iets later. Hapert een zender vaak, dan bouwt de app vanzelf extra buffer op.</p>
@@ -457,6 +462,10 @@ dd { margin: 0; font-weight: 700; }
   const yearOf = (...xs) => { for (const x of xs) { const m = String(x ?? '').match(/\b(19|20)\d{2}\b/); if (m) return m[0]; } return ''; };
   // Absolute URL: mpegts.js haalt streams op in een worker, en daar werkt een relatieve URL niet.
   const proxyUrl = u => location.origin + '/proxy?url=' + encodeURIComponent(u);
+  // Op een https-site blokkeert de browser plaatjes via http; die lopen dan ook via de proxy.
+  const imgSrc = u => location.protocol === 'https:' && /^http:/i.test(u) ? proxyUrl(u) : u;
+  // Sessie verlopen op een beveiligde server? Terug naar de inlogpagina.
+  const checkAuth = res => { if (res.status === 401) { location.href = '/login'; throw new Error('Niet ingelogd'); } };
 
   // ---------- opslag (alleen op deze computer) ----------
   const store = {
@@ -498,6 +507,7 @@ dd { margin: 0; font-weight: 700; }
     let res;
     try { res = await fetch(proxyUrl(u.href) + '&kind=list'); }
     catch { throw new Error('Kan server.py niet bereiken. Draait hij nog?'); }
+    checkAuth(res);
     const text = await res.text();
     if (!res.ok) throw new Error(text.trim() || 'Fout ' + res.status);
     try { return JSON.parse(text); }
@@ -643,6 +653,7 @@ dd { margin: 0; font-weight: 700; }
       let res;
       try { res = await fetch(proxyUrl(url) + '&kind=list'); }
       catch { throw new Error('Kan server.py niet bereiken. Draait hij nog?'); }
+      checkAuth(res);
       const text = await res.text();
       if (!res.ok) throw new Error(`${text.trim() || 'Fout ' + res.status}. Tip: test je link met  python server.py --test "jouw-link"`);
       if (!text.includes('#EXTM3U') && !text.includes('#EXTINF')) throw new Error('Dit is geen M3U-playlist. Controleer of de link eindigt op iets als type=m3u_plus.');
@@ -784,9 +795,9 @@ dd { margin: 0; font-weight: 700; }
   }
 
   const logoHtml = (src, name, cls = 'logo') =>
-    `<span class="${cls}" data-ini="${esc(initials(name))}">${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`;
+    `<span class="${cls}" data-ini="${esc(initials(name))}">${src ? `<img src="${esc(imgSrc(src))}" alt="" loading="lazy" onerror="this.remove()">` : ''}</span>`;
   const posterHtml = (src, name, extra = '') =>
-    `<span class="poster" data-ini="${esc(initials(name))}">${src ? `<img src="${esc(src)}" alt="" loading="lazy" onerror="this.remove()">` : ''}${extra}</span>`;
+    `<span class="poster" data-ini="${esc(initials(name))}">${src ? `<img src="${esc(imgSrc(src))}" alt="" loading="lazy" onerror="this.remove()">` : ''}${extra}</span>`;
   const progressOf = key => { const r = resume[key]; return r && r[1] ? Math.min(100, r[0] / r[1] * 100) : 0; };
 
   function liveRow(c, i) {
@@ -1079,7 +1090,7 @@ dd { margin: 0; font-weight: 700; }
     d.hidden = false; d.scrollTop = 0;
     $('dTitle').textContent = it.name;
     $('dPoster').outerHTML = posterHtml(it.poster, it.name).replace('<span class="poster"', '<span class="poster" id="dPoster"');
-    $('dBg').style.backgroundImage = it.poster ? `url(${JSON.stringify(it.poster)})` : '';
+    $('dBg').style.backgroundImage = it.poster ? `url(${JSON.stringify(imgSrc(it.poster))})` : '';
     setMeta({ year: it.year, rating: it.rating, genre: it.genre, cat: catName(key, it.cat) });
     $('dPlot').textContent = it.plot || '';
     $('dCredits').innerHTML = '';
@@ -1129,7 +1140,7 @@ dd { margin: 0; font-weight: 700; }
   }
   function setBackdrop(b) {
     const u = Array.isArray(b) ? b[0] : b;
-    if (u) $('dBg').style.backgroundImage = `url(${JSON.stringify(u)})`;
+    if (u) $('dBg').style.backgroundImage = `url(${JSON.stringify(imgSrc(u))})`;
   }
 
   function seasonsFromXtream(r) {
@@ -1357,6 +1368,12 @@ dd { margin: 0; font-weight: 700; }
   });
 
   // instellingen
+  fetch('/session').then(r => r.ok ? r.json() : null).then(s => { if (s && s.auth) $('siteCard').hidden = false; }).catch(() => {});
+  $('siteLogout').addEventListener('click', async () => {
+    stopPlayback();
+    try { await fetch('/logout', { method: 'POST' }); } catch {}
+    location.href = '/login';
+  });
   $('logoutBtn').addEventListener('click', () => {
     stopPlayback(); resetLiveScreen();
     source = null; account = null;
