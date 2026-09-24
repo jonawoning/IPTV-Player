@@ -153,7 +153,7 @@ PAGE_CSP = (
     "font-src https://fonts.gstatic.com; "
     "img-src 'self' http: https: data: blob:; "
     "media-src 'self' blob:; "
-    "connect-src 'self'; "
+    "connect-src 'self' https://cdn.jsdelivr.net; "
     "worker-src 'self' blob:; "
     "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 )
