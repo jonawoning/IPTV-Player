@@ -1465,6 +1465,9 @@ dd { margin: 0; font-weight: 700; }
     const h = eng.hls = new Hls({
       backBufferLength: 30, manifestLoadingMaxRetry: 2, lowLatencyMode: false,
       maxBufferLength: 30, maxMaxBufferLength: 60, liveSyncDurationCount: 3,
+      // De afspeellijst groeit terwijl de server omzet (type EVENT), dus hls.js ziet hem als "live"
+      // en zou naar het einde springen. Altijd vanaf het begin van de omgezette stream beginnen.
+      startPosition: 0,
       fragLoadingMaxRetry: 6, levelLoadingMaxRetry: 6, nudgeMaxRetry: 10,
     });
     let recovered = false;

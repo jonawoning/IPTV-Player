@@ -82,6 +82,28 @@ def media_tools():
     return shutil.which("ffmpeg"), shutil.which("ffprobe")
 
 
+_readrate_cache = {}
+
+
+def readrate_args(ffmpeg):
+    """Leessnelheid voor het omzetten: eerst een minuut buffer in één keer, daarna 1,5x afspeelsnelheid.
+    Zo hapert de speler niet (wat met -re wel gebeurde), maar haalt ffmpeg ook niet de hele film in
+    één ruk binnen bij de provider. Oudere ffmpeg-versies kennen (een deel van) deze opties niet."""
+    if ffmpeg not in _readrate_cache:
+        try:
+            out = subprocess.run([ffmpeg, "-hide_banner", "-h", "full"], capture_output=True, timeout=15)
+            help_text = out.stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.TimeoutExpired):
+            help_text = ""
+        if "readrate_initial_burst" in help_text:
+            _readrate_cache[ffmpeg] = ["-readrate", "1.5", "-readrate_initial_burst", "60"]
+        elif "-readrate" in help_text:
+            _readrate_cache[ffmpeg] = ["-readrate", "1.5"]
+        else:
+            _readrate_cache[ffmpeg] = []
+    return _readrate_cache[ffmpeg]
+
+
 def ocr_tool():
     """Pas bij gebruik zoeken: installeer tesseract later, dan werkt beeldondertiteling meteen."""
     return shutil.which("tesseract")
@@ -900,15 +922,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                "-protocol_whitelist", "http,tcp", "-headers", internal_headers()]
         if start > 0:
             cmd += ["-ss", f"{start:.2f}"]
-        cmd += ["-re", "-i", internal_url(url), "-map", "0:v:0?", "-map", f"0:{audio}" if audio >= 0 else "0:a:0?"]
+        # Geen -re: dan komt elk stukje pas vrij als het afspeelmoment er al bijna is; de speler hapert
+        # dan steeds en elke hapering geeft tikken in het geluid. Wel een ruimere leessnelheid.
+        cmd += readrate_args(ffmpeg)
+        cmd += ["-i", internal_url(url), "-map", "0:v:0?", "-map", f"0:{audio}" if audio >= 0 else "0:a:0?"]
         if copy_video:
             cmd += ["-c:v", "copy"] + (["-tag:v", "hvc1"] if qs.get("hevc", [""])[0] == "1" else [])
         else:
             cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p",
                     "-vf", "scale=w='min(1920,iw)':h=-2", "-vsync", "cfr"]
-        # geluid iets rekken/inkorten waar nodig, zodat het bij het beeld blijft lopen ook als de
-        # tijdstempels van de provider niet helemaal kloppen (voorkomt geleidelijk uit de pas lopen)
-        cmd += ["-c:a", "aac", "-ac", "2", "-b:a", "192k", "-af", "aresample=async=1000:first_pts=0", "-sn", "-dn",
+        # Gaten in de tijdstempels van de provider opvullen met stilte (en overlap wegknippen), zodat
+        # het geluid bij het beeld blijft. async=1: alleen bij echte gaten, niet continu rekken of
+        # krimpen; dat laatste (async=1000) klinkt bij onrustige tijdstempels vaag en jankerig.
+        # Altijd 48 kHz: geluid op 44,1 kHz in HLS-stukjes geeft in Chrome (via hls.js) tikken en piepjes.
+        cmd += ["-c:a", "aac", "-ac", "2", "-ar", "48000", "-b:a", "192k", "-af", "aresample=async=1:first_pts=0", "-sn", "-dn",
                 "-avoid_negative_ts", "make_zero",
                 "-f", "hls", "-hls_time", "4", "-hls_list_size", "0", "-hls_playlist_type", "event",
                 "-hls_segment_filename", os.path.join(job_dir, "seg%05d.ts"), playlist]
